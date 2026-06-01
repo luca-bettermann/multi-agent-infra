@@ -19,10 +19,15 @@ python3 kanban-dispatch.py --preview     # show routing for current open cards (
 python3 kanban-dispatch.py               # dry run (first run just records a baseline)
 DRY_RUN=0 python3 kanban-dispatch.py     # GO LIVE
 ```
-Enable via cron once reviewed (every 2 min):
+Enable via cron (every 2 min). **Status: LIVE since 2026-06-01.** Cron's default
+`PATH` (`/usr/bin:/bin`) omits `/usr/local/bin` where `python3` lives here, so set
+`PATH` explicitly and use absolute paths:
 ```
-*/2 * * * * flock -n /tmp/kdispatch.lock env DRY_RUN=0 python3 ~/projects/agent-infra/kanban-dispatch.py >> ~/projects/agent-infra/dispatch.log 2>&1
+PATH=/usr/local/bin:/usr/bin:/bin
+*/2 * * * * flock -n /tmp/kdispatch.lock env DRY_RUN=0 python3 /home/luca/projects/agent-infra/kanban-dispatch.py >> /home/luca/projects/agent-infra/dispatch.log 2>&1
 ```
+`flock` execs its argument directly, so the env var is set via `env` (not a shell
+`VAR=val` prefix). SSH `git fetch` works non-interactively (BatchMode-verified).
 Config (env or top of file): `KB_DIR`, `SESSIONS_CONF`, `KDISPATCH_STATE`, `DRY_RUN`.
 The user `review` ping is `notify-send` only — plug ntfy/Pushover into `notify_user()` for a phone push.
 
