@@ -8,10 +8,10 @@ Three pieces. See the KB notes `Agent Setup.md` (folder template/sessions) and
 Polls the Obsidian CLAUDE Kanban (via `git fetch` on a KB clone) and fires three events:
 - card enters **`open`** -> ping the owning session (routed by first scope tag, `sessions.conf`)
 - card enters **`review`** -> ping the user (`notify-send` + `~/.claude-inbox/_user.md`)
-- card enters **`complete`** + `#from:<session>` -> ping that session (handoff callback)
+- card enters **`complete`** + `#from/<session>` -> ping that session (handoff callback)
 
 A ping = a durable line in `~/.claude-inbox/<session>.md` **plus** a `tmux send-keys` nudge
-(the inbox is the durable half; the keystroke is best-effort). Routing override: `#to:<session>`.
+(the inbox is the durable half; the keystroke is best-effort). Routing override: `#to/<session>`.
 
 **Safe by default — `DRY_RUN=1`.**
 ```

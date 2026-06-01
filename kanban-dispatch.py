@@ -6,7 +6,7 @@ Claude session when a card changes column.
 Fires exactly three events:
   * card enters `open`                    -> ping the owning session (routed by first scope tag)
   * card enters `review`                  -> ping the user
-  * card enters `complete` + #from:<sess> -> ping that session (handoff callback)
+  * card enters `complete` + #from/<sess> -> ping that session (handoff callback)
 Everything else is silence.
 
 SAFE BY DEFAULT: DRY_RUN=1 logs what it WOULD do and touches nothing.
@@ -62,7 +62,7 @@ def parse_board(text):
             continue
         m = CARD_RE.match(ln.strip())
         if m and col:
-            tags = re.findall(r'#([A-Za-z0-9:_\-]+)', m.group(2))
+            tags = re.findall(r'#([A-Za-z0-9:/_\-]+)', m.group(2))
             cards[m.group(1).strip()] = (col, tags)
     return cards
 
@@ -70,10 +70,21 @@ def board_at(ref):
     r = sh("git", "-C", KB_DIR, "show", f"{ref}:{BOARD}")
     return r.stdout if r.returncode == 0 else ""
 
+def handoff_target(tag, kind):
+    # kind is "from" or "to". Accept the Obsidian-valid nested form
+    # (kind/<session>) and the legacy colon form (kind:<session>). A colon is
+    # NOT a valid Obsidian tag char, so #from:x renders as #from + stray ":x" —
+    # prefer the slash form on the board.
+    for sep in ("/", ":"):
+        if tag.startswith(kind + sep):
+            return tag[len(kind) + 1:]
+    return None
+
 def route(tags, routes):
-    for t in tags:                       # #to:<session> hard override
-        if t.startswith("to:"):
-            return t[3:]
+    for t in tags:                       # #to/<session> hard override (or legacy #to:)
+        tgt = handoff_target(t, "to")
+        if tgt:
+            return tgt
     for t in tags:                       # first scope tag present in the map
         if t in routes:
             return routes[t]
@@ -148,7 +159,11 @@ def main():
             log(f"review: '{title}' -> user")
             notify_user(title)
         elif col == "complete":
-            frm = next((t[5:] for t in tags if t.startswith("from:")), None)
+            frm = None
+            for t in tags:
+                frm = handoff_target(t, "from")
+                if frm:
+                    break
             if frm:
                 log(f"complete: '{title}' -> {frm} (handoff callback)")
                 ping_session(frm, "handoff done", title)
