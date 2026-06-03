@@ -5,8 +5,9 @@ Three pieces. See the KB notes `Agent Setup.md` (folder template/sessions) and
 `Roll out multi-agent kanban workflow`.
 
 ## 1. `kanban-dispatch.py` — board → session dispatcher
-Polls the Obsidian CLAUDE Kanban (via `git fetch` on a KB clone) and fires three events:
+Polls the Obsidian CLAUDE Kanban (via `git fetch` on a KB clone) and fires four events:
 - card enters **`open`** -> ping the owning session (routed by first scope tag, `sessions.conf`)
+- card moves **`review` -> `in progress`** -> ping the owning session (design sign-off / build approval; routed like `open`)
 - card enters **`review`** -> ping the user (`notify-send` + `~/.claude-inbox/_user.md`)
 - card enters **`complete`** + `#from/<session>` -> ping that session (handoff callback)
 

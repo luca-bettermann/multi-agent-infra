@@ -146,7 +146,8 @@ def main():
 
     old, new = parse_board(board_at(old_ref)), parse_board(board_at(new_ref))
     for title, (col, tags) in new.items():
-        if col == old.get(title, (None, []))[0]:
+        prev = old.get(title, (None, []))[0]
+        if col == prev:
             continue                       # column unchanged
         if col == "open":
             sess = route(tags, routes)
@@ -155,6 +156,15 @@ def main():
                 continue
             log(f"open: '{title}' -> {sess}")
             ping_session(sess, "new task", title)
+        elif col == "in progress" and prev == "review":
+            # user sign-off: review -> in progress hands the card back to the
+            # owning agent (build the approved design, or address review feedback)
+            sess = route(tags, routes)
+            if not sess:
+                log(f"resume: '{title}' — UNMAPPED scope, not routed  [{' '.join('#'+t for t in tags)}]")
+                continue
+            log(f"resume: '{title}' (review->in progress) -> {sess}")
+            ping_session(sess, "resume — build/continue per the note", title)
         elif col == "review":
             log(f"review: '{title}' -> user")
             notify_user(title)
