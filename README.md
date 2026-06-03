@@ -19,12 +19,17 @@ python3 kanban-dispatch.py --preview     # show routing for current open cards (
 python3 kanban-dispatch.py               # dry run (first run just records a baseline)
 DRY_RUN=0 python3 kanban-dispatch.py     # GO LIVE
 ```
-Enable via cron (every 2 min). **Status: LIVE since 2026-06-01.** Cron's default
-`PATH` (`/usr/bin:/bin`) omits `/usr/local/bin` where `python3` lives here, so set
-`PATH` explicitly and use absolute paths:
+Enable via cron (every 1 min). **Status: LIVE since 2026-06-01.** Polling (not a
+push webhook) is deliberate: the remote is GitHub (no server-side hooks), Obsidian
+Git uses isomorphic-git (bypasses local hooks), and the box is behind NAT (a webhook
+would need a maintained tunnel). 1 min is cron's floor; sub-minute would mean a
+systemd timer/daemon and `git fetch` churn for no real gain — latency is dominated
+by Obsidian's commit-and-sync, not the poll. Cron's default `PATH` (`/usr/bin:/bin`)
+omits `/usr/local/bin` where `python3` lives here, so set `PATH` explicitly and use
+absolute paths:
 ```
 PATH=/usr/local/bin:/usr/bin:/bin
-*/2 * * * * flock -n /tmp/kdispatch.lock env DRY_RUN=0 python3 /home/luca/projects/agent-infra/kanban-dispatch.py >> /home/luca/projects/agent-infra/dispatch.log 2>&1
+* * * * * flock -n /tmp/kdispatch.lock env DRY_RUN=0 python3 /home/luca/projects/agent-infra/kanban-dispatch.py >> /home/luca/projects/agent-infra/dispatch.log 2>&1
 ```
 `flock` execs its argument directly, so the env var is set via `env` (not a shell
 `VAR=val` prefix). SSH `git fetch` works non-interactively (BatchMode-verified).
