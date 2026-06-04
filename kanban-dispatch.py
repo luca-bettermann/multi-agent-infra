@@ -176,7 +176,7 @@ def main():
                     break
             if frm:
                 log(f"complete: '{title}' -> {frm} (handoff callback)")
-                ping_session(frm, "handoff done", title)
+                ping_session(frm, "handoff cleared — unblock your dependent card and proceed", title)
     open(STATE, "w").write(new_ref)
 
 if __name__ == "__main__":
