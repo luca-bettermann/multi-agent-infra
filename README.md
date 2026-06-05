@@ -51,3 +51,22 @@ to file a handoff card. Convention-level guard (the kernel guarantee is the bind
 ./mount-context-repo.sh <owner-repo-path> <agent-root>
 ```
 Mounts a repo read-only into `<agent-root>/context-repos/` (sudo; prints the `/etc/fstab` line to persist).
+
+## 4. `context-mounts.conf` + `mount-all-context.sh` — persistent, manifest-driven mounts
+`context-mounts.conf` is the **source of truth** for all cross-agent context bind mounts
+(one `<source-repo> <agent-root>` per line). `mount-all-context.sh` mounts them all
+read-only, idempotently (skips already-mounted, warns on a missing source) and re-execs
+itself via `sudo` when run as non-root; `--dry-run` previews without mounting.
+
+Persistence is the **systemd oneshot** `context-mounts.service` (runs the script at boot,
+as root) — **not** `/etc/fstab`. To persist or change the mount topology, edit the
+manifest, not fstab. `mount-context-repo.sh` (§3) is fine for a quick ad-hoc one-off, but
+anything that should survive a reboot belongs in the manifest.
+
+Install the boot unit (one-time):
+```
+sudo cp ~/projects/agent-infra/context-mounts.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now context-mounts.service
+```
+Add context for an agent: add a line to `context-mounts.conf`, then run `./mount-all-context.sh`.

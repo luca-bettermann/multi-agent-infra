@@ -1,0 +1,12 @@
+[Unit]
+Description=Mount cross-agent context-repos read-only (per context-mounts.conf)
+After=local-fs.target
+RequiresMountsFor=/home/luca/projects
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/home/luca/projects/agent-infra/mount-all-context.sh
+
+[Install]
+WantedBy=multi-user.target
