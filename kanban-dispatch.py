@@ -175,8 +175,12 @@ def main():
                 if frm:
                     break
             if frm:
-                log(f"complete: '{title}' -> {frm} (handoff callback)")
-                ping_session(frm, "handoff cleared — unblock your dependent card and proceed", title)
+                # frm is a #from/<scope> tag — resolve it to its session via the
+                # routing map (e.g. pred-fab-mock -> pfab-mock); pass through if it
+                # is already a session name (e.g. #from/rtde).
+                sess = routes.get(frm, frm)
+                log(f"complete: '{title}' -> {sess} (handoff callback, from scope '{frm}')")
+                ping_session(sess, "handoff cleared — unblock your dependent card and proceed", title)
     open(STATE, "w").write(new_ref)
 
 if __name__ == "__main__":
