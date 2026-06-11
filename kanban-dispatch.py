@@ -3,10 +3,12 @@
 kanban-dispatch — poll the Obsidian CLAUDE Kanban and notify the right tmux
 Claude session when a card changes column.
 
-Fires exactly three events:
-  * card enters `open`                    -> ping the owning session (routed by first scope tag)
-  * card enters `review`                  -> ping the user
-  * card enters `complete` + #from/<sess> -> ping that session (handoff callback)
+Fires four events as LIVE tmux nudges only (the board is the durable queue — an
+offline/busy session that misses a nudge recovers it by reconciling from the board on wake):
+  * card enters `open`                       -> nudge the owning session (routed by first scope tag)
+  * card moves `review` -> `in progress`     -> nudge the owning session (sign-off / build)
+  * card enters `review`                     -> notify the user
+  * card enters `complete` + #from/<scope>   -> nudge that scope's session (handoff callback)
 Everything else is silence.
 
 SAFE BY DEFAULT: DRY_RUN=1 logs what it WOULD do and touches nothing.
@@ -21,7 +23,6 @@ KB_DIR    = os.environ.get("KB_DIR", os.path.expanduser("~/projects/advei/knowle
 BOARD     = "CLAUDE Kanban.md"
 CONF      = os.environ.get("SESSIONS_CONF", os.path.expanduser("~/projects/agent-infra/sessions.conf"))
 STATE     = os.environ.get("KDISPATCH_STATE", os.path.expanduser("~/projects/agent-infra/.state"))
-INBOX_DIR = os.path.expanduser("~/.claude-inbox")
 LOGFILE   = os.path.expanduser("~/projects/agent-infra/dispatch.log")
 # no catch-all: an unmapped scope is logged and not routed
 DRY_RUN   = os.environ.get("DRY_RUN", "1") != "0"   # default: dry
@@ -94,28 +95,26 @@ def session_running(s):
     return sh("tmux", "has-session", "-t", s).returncode == 0
 
 def ping_session(sess, kind, card):
-    note = f"{time.strftime('%H:%M')}  {kind}: {card}"
+    # Live nudge only — the board is the durable queue. A session that is offline or
+    # busy and misses this recovers the event by reconciling from the board on wake.
     if DRY_RUN:
-        log(f"[DRY] -> inbox {sess}.md + send-keys {sess}: {note}")
+        log(f"[DRY] -> send-keys {sess}: {kind}: {card}")
         return
-    os.makedirs(INBOX_DIR, exist_ok=True)
-    with open(os.path.join(INBOX_DIR, f"{sess}.md"), "a") as f:
-        f.write(note + "\n")
     if session_running(sess):
         sh("tmux", "send-keys", "-t", sess,
-           f"kanban: {kind} — read ~/.claude-inbox/{sess}.md, git pull KB, pick it up")
+           f"kanban: {kind} — '{card}'. git pull KB and reconcile your board queue.")
         sh("tmux", "send-keys", "-t", sess, "Enter")   # Enter separately: send-keys drops a trailing newline
+        log(f"nudged '{sess}': {kind}: {card}")
     else:
-        log(f"session '{sess}' not running — queued in inbox only")
+        log(f"session '{sess}' not running — board carries it (reconcile on wake)")
 
 def notify_user(card):
+    # The board's `review` column is the durable record; this is just a live ping.
     if DRY_RUN:
         log(f"[DRY] -> notify user (review): {card}")
         return
-    os.makedirs(INBOX_DIR, exist_ok=True)
-    with open(os.path.join(INBOX_DIR, "_user.md"), "a") as f:
-        f.write(f"{time.strftime('%H:%M')}  REVIEW: {card}\n")
     sh("notify-send", "Kanban review", card)
+    log(f"notified user (review): {card}")
     # TODO: plug ntfy/Pushover here for a real phone push.
 
 def preview():
