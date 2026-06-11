@@ -11,6 +11,15 @@
 # Injects "[agent-msg from <sender>] <message>" into the target's live tmux prompt and
 # submits it. Reply by running agent-msg back to the sender. If the target session is
 # not running the message is NOT delivered (use a task for anything that must survive).
+#
+# Pre-send guard: because we type text + Enter into the target's live TTY, sending while
+# the target is at an interactive prompt (AskUserQuestion, permission dialog, plan
+# approval) or actively generating makes that Enter collide with the prompt and can
+# submit a PHANTOM choice (e.g. auto-confirm the highlighted option). So we first
+# passively snapshot the target screen (`capture-pane` sends NOTHING to the target) and
+# refuse (exit 2) if it looks non-idle, telling the sender to have the user resolve it
+# and retry. Heuristic — INTERACTIVE_RE below is the tunable part; extend as new prompt
+# signatures appear.
 set -euo pipefail
 [ $# -ge 2 ] || { echo "usage: agent-msg <target-session-or-scope> <message...>" >&2; exit 1; }
 
@@ -26,6 +35,17 @@ sender="$(tmux display-message -p '#S' 2>/dev/null || echo "${USER:-unknown}")"
 if ! tmux has-session -t "$sess" 2>/dev/null; then
   echo "'$sess' is not running — message NOT delivered. agent-msg is live-only; for durable/async handoff use a kanban task." >&2
   exit 1
+fi
+
+# Pre-send guard — passively snapshot the target and bail if it isn't idle.
+# capture-pane only READS the screen; it injects nothing, so it can't disturb a
+# prompt. Markers (tune freely): active generation, permission dialogs, numbered
+# selection options, and AskUserQuestion-style footers.
+INTERACTIVE_RE='esc to interrupt|Do you want to proceed|❯ +[0-9][.)]| to select| to confirm'
+screen="$(tmux capture-pane -t "$sess" -p 2>/dev/null | tail -n 40)"
+if printf '%s\n' "$screen" | grep -Eq "$INTERACTIVE_RE"; then
+  echo "'$sess' looks busy or is at an interactive prompt — message NOT delivered. Typing into it now could collide with its prompt and submit a phantom choice. Ask the user to resolve '$sess' to an idle prompt, then retry agent-msg." >&2
+  exit 2
 fi
 
 tmux send-keys -t "$sess" -l -- "[agent-msg from $sender] $msg"
