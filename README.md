@@ -71,3 +71,31 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now context-mounts.service
 ```
 Add context for an agent: add a line to `context-mounts.conf`, then run `./mount-all-context.sh`.
+
+## 5. `limit-watcher.py` + `auto-resume.sh` — auto-resume after the 5h usage limit
+The 5-hour usage limit is **per-account, shared across every session**. `limit-watcher.py`
+(cron, every 1 min) passively `capture-pane`-snapshots each **enrolled** tmux session;
+when one shows the usage-limit screen it parses the reset time and, once past (+90s),
+injects a resume prompt so the agent continues — Claude Code keeps the conversation alive
+through the limit, so no `--continue` is needed. Because the bucket is shared it resumes
+**at most one session per tick** (in `sessions.conf` order), with `MAX_ATTEMPTS` and a
+`+5h` fallback if the reset time can't be parsed. There is no limit-hit hook in Claude
+Code, so screen-scraping is the only signal. Run `limit-watcher.py --selftest` to exercise
+the reset-time parser offline.
+
+Control surface (`auto-resume.sh`, symlinked to `~/.local/bin/auto-resume`):
+```
+auto-resume status               # master state · enrolled set · cron · recent log
+auto-resume on | off             # master kill-switch (limit-watcher.off); off = paused
+auto-resume enable  <session>    # enroll a session (auto-resume.enrolled)
+auto-resume disable <session>    # unenroll
+```
+**Opt-in**: ships master-OFF with an empty enrolled set (resumes nobody until you
+`enable <session>` **and** `on`). Files: `limit-watcher.off` (master switch),
+`auto-resume.enrolled` (one session per line), `limit-watcher.state.json` (per-session
+reset_ts + attempts), `limit-watcher.log` (audit trail). Cron line:
+```
+* * * * * flock -n /tmp/limit-watcher.lock /usr/local/bin/python3 /home/luca/projects/agent-infra/limit-watcher.py >> /home/luca/projects/agent-infra/limit-watcher.log 2>&1
+```
+**Caveat:** not yet validated against a real limit event — the open unknown is whether an
+injected keystroke re-engages a freshly-reset session. Confirm on the next genuine hit.
