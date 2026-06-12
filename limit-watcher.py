@@ -60,10 +60,15 @@ RESUME_PROMPT = (
     "or a decision that truly needs the user."
 )
 
-# Limit-screen signature. Claude Code shows e.g.
+# Limit-screen signature. The REAL message (observed 2026-06-12) is:
+#   "You've hit your session limit · resets 4:30am (Europe/Berlin)"
+# Earlier variants also seen/reported:
 #   "Claude usage limit reached. Your limit will reset at 3pm"
 #   "5-hour limit reached - resets 9:00pm"
-LIMIT_RE = re.compile(r"(usage limit reached|limit will reset|\b\d+-hour limit\b)", re.I)
+LIMIT_RE = re.compile(
+    r"(hit your (?:session|usage) limit|session limit|usage limit reached"
+    r"|limit will reset|\b\d+-hour limit\b)", re.I
+)
 # Absolute reset time: "reset at 3pm", "resets 9:00pm", "will reset at 1pm", "reset at 15:00"
 TIME_RE = re.compile(
     r"reset(?:s|\s+will\s+reset)?(?:\s+at)?\s+(\d{1,2})(?::(\d{2}))?\s*([ap]m)?", re.I
@@ -139,7 +144,14 @@ def parse_reset_ts(text: str, now: float | None = None) -> float | None:
             target = base.replace(hour=hh, minute=mm, second=0, microsecond=0)
             if target.timestamp() <= now:
                 target += timedelta(days=1)
-            return target.timestamp()
+            ts = target.timestamp()
+            # Stale-message guard: a real reset is <=5h out. A value far beyond
+            # that means we rolled an already-passed message forward to tomorrow
+            # (detection was down through the reset) — report the earlier, past
+            # occurrence so the watcher resumes now instead of waiting ~24h.
+            if ts - now > 6 * 3600:
+                ts -= 86400
+            return ts
     r = REL_RE.search(text)
     if r and (r.group(1) or r.group(2)):
         return now + int(r.group(1) or 0) * 3600 + int(r.group(2) or 0) * 60
@@ -231,6 +243,7 @@ def main() -> None:
 
 def selftest() -> None:
     cases = [
+        "You've hit your session limit · resets 4:30am (Europe/Berlin)",   # REAL (2026-06-12)
         "Claude usage limit reached. Your limit will reset at 3pm",
         "5-hour limit reached - resets 9:00pm",
         "Your limit will reset at 1pm (America/New_York)",
