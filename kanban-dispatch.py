@@ -8,7 +8,7 @@ offline/busy session that misses a nudge recovers it by reconciling from the boa
   * card enters `open`                       -> nudge the owning session (routed by first scope tag)
   * card moves `review` -> `in progress`     -> nudge the owning session (sign-off / build)
   * card enters `review`                     -> notify the user
-  * card enters `complete` + #from/<scope>   -> nudge that scope's session (handoff callback)
+  * card enters `cleanup` + #from/<scope>    -> nudge that scope's session (handoff callback)
 Everything else is silence.
 
 SAFE BY DEFAULT: DRY_RUN=1 logs what it WOULD do and touches nothing.
@@ -167,7 +167,7 @@ def main():
         elif col == "review":
             log(f"review: '{title}' -> user")
             notify_user(title)
-        elif col == "complete":
+        elif col == "cleanup":
             frm = None
             for t in tags:
                 frm = handoff_target(t, "from")
@@ -178,7 +178,7 @@ def main():
                 # routing map (e.g. pred-fab-mock -> pfab-mock); pass through if it
                 # is already a session name (e.g. #from/rtde).
                 sess = routes.get(frm, frm)
-                log(f"complete: '{title}' -> {sess} (handoff callback, from scope '{frm}')")
+                log(f"cleanup: '{title}' -> {sess} (handoff callback, from scope '{frm}')")
                 ping_session(sess, "handoff cleared — unblock your dependent card and proceed", title)
     open(STATE, "w").write(new_ref)
 

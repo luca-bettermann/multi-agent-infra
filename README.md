@@ -9,7 +9,7 @@ Polls the Obsidian CLAUDE Kanban (via `git fetch` on a KB clone) and fires four 
 - card enters **`open`** -> ping the owning session (routed by first scope tag, `sessions.conf`)
 - card moves **`review` -> `in progress`** -> ping the owning session (design sign-off / build approval; routed like `open`)
 - card enters **`review`** -> ping the user (`notify-send`)
-- card enters **`complete`** + `#from/<session>` -> ping that session (handoff callback)
+- card enters **`cleanup`** + `#from/<session>` -> ping that session (handoff callback)
 
 A ping is a best-effort `tmux send-keys` nudge to the **live** session — **no file**. The board
 is the durable queue: a session that misses a nudge (offline/busy) recovers the event by
