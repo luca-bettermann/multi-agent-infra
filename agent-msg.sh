@@ -23,7 +23,7 @@
 set -euo pipefail
 [ $# -ge 2 ] || { echo "usage: agent-msg <target-session-or-scope> <message...>" >&2; exit 1; }
 
-DIR="$(cd "$(dirname "$0")" && pwd)"
+DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"   # resolve symlink (~/.local/bin) to the real agent-infra dir
 CONF="$DIR/sessions.conf"
 target="$1"; shift
 msg="$(printf '%s' "$*" | tr '\n' ' ')"   # one line — a newline would submit early

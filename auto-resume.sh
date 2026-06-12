@@ -10,7 +10,7 @@
 #   auto-resume status             # master state + enrolled set + cron + recent log
 set -euo pipefail
 
-DIR="$(cd "$(dirname "$0")" && pwd)"
+DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"   # resolve symlink (~/.local/bin) to the real agent-infra dir
 OFF="$DIR/limit-watcher.off"
 ENROLL="$DIR/auto-resume.enrolled"
 LOG="$DIR/limit-watcher.log"
