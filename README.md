@@ -11,9 +11,12 @@ Polls the Obsidian CLAUDE Kanban (via `git fetch` on a KB clone) and fires four 
 - card enters **`review`** -> ping the user (`notify-send`)
 - card enters **`cleanup`** + `#from/<session>` -> ping that session (handoff callback)
 
-A ping is a best-effort `tmux send-keys` nudge to the **live** session — **no file**. The board
-is the durable queue: a session that misses a nudge (offline/busy) recovers the event by
-reconciling from the board on wake. Routing override: `#to/<session>`.
+A ping is a best-effort `tmux send-keys` nudge to the **live** session — **no file**. It is
+**skipped if the target session is busy** (generating or on an interactive prompt — passive
+`capture-pane` check): nudging then would interrupt work mid-flight (e.g. an agent that just
+created its own card → self-nudge) or orphan text in its input. The board is the durable
+queue: a session that's offline, busy, or misses a nudge recovers it by reconciling from the
+board on wake. Routing override: `#to/<session>`.
 
 **Safe by default — `DRY_RUN=1`.**
 ```

@@ -94,19 +94,32 @@ def route(tags, routes):
 def session_running(s):
     return sh("tmux", "has-session", "-t", s).returncode == 0
 
+# A session is "busy" when generating or sitting on an interactive prompt. Nudging
+# then either orphans text in its input or self-interrupts work it's mid-flight on
+# (e.g. an agent that just created its own card). Passive capture-pane check (same
+# markers as agent-msg) — on busy we skip and let the board carry it.
+BUSY_RE = re.compile(r"esc to interrupt|Do you want to proceed|❯ +[0-9][.)]| to select| to confirm")
+
+def session_busy(s):
+    r = sh("tmux", "capture-pane", "-t", s, "-p")
+    return r.returncode == 0 and bool(BUSY_RE.search(r.stdout))
+
 def ping_session(sess, kind, card):
-    # Live nudge only — the board is the durable queue. A session that is offline or
-    # busy and misses this recovers the event by reconciling from the board on wake.
+    # Live nudge only — the board is the durable queue. A session that is offline,
+    # busy, or misses this recovers the event by reconciling from the board on wake.
     if DRY_RUN:
         log(f"[DRY] -> send-keys {sess}: {kind}: {card}")
         return
-    if session_running(sess):
-        sh("tmux", "send-keys", "-t", sess,
-           f"kanban: {kind} — '{card}'. git pull KB and reconcile your board queue.")
-        sh("tmux", "send-keys", "-t", sess, "Enter")   # Enter separately: send-keys drops a trailing newline
-        log(f"nudged '{sess}': {kind}: {card}")
-    else:
+    if not session_running(sess):
         log(f"session '{sess}' not running — board carries it (reconcile on wake)")
+        return
+    if session_busy(sess):
+        log(f"'{sess}' busy — nudge skipped ({kind}: {card}); board carries it (reconcile when idle)")
+        return
+    sh("tmux", "send-keys", "-t", sess,
+       f"kanban: {kind} — '{card}'. git pull KB and reconcile your board queue.")
+    sh("tmux", "send-keys", "-t", sess, "Enter")   # Enter separately: send-keys drops a trailing newline
+    log(f"nudged '{sess}': {kind}: {card}")
 
 def notify_user(card):
     # The board's `review` column is the durable record; this is just a live ping.
