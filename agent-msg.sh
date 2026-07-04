@@ -38,11 +38,15 @@ if ! tmux has-session -t "$sess" 2>/dev/null; then
 fi
 
 # Pre-send guard — passively snapshot the target and bail if it isn't idle.
-# capture-pane only READS the screen; it injects nothing, so it can't disturb a
-# prompt. Markers (tune freely): active generation, permission dialogs, numbered
-# selection options, and AskUserQuestion-style footers.
+# capture-pane only READS the screen; it injects nothing. Capture WITH escapes (-e)
+# and strip Claude Code's faint "ghost text" (a dim SGR-2m history suggestion shown
+# on an empty idle prompt) BEFORE matching — otherwise a prior message rendered as a
+# suggestion false-positives forever. Real busy indicators aren't faint, so they
+# survive. Markers (tune freely): active generation, permission dialogs, numbered
+# selection options, AskUserQuestion-style footers.
 INTERACTIVE_RE='esc to interrupt|Do you want to proceed|❯ +[0-9][.)]| to select| to confirm'
-screen="$(tmux capture-pane -t "$sess" -p 2>/dev/null | tail -n 40)"
+screen="$(tmux capture-pane -t "$sess" -e -p 2>/dev/null | tail -n 40 \
+  | perl -pe 's/\e\[(?:[0-9;]*;)?2m[^\e]*//g; s/\e\[[0-9;]*m//g')"
 if printf '%s\n' "$screen" | grep -Eq "$INTERACTIVE_RE"; then
   echo "'$sess' looks busy or is at an interactive prompt — message NOT delivered. Typing into it now could collide with its prompt and submit a phantom choice. Ask the user to resolve '$sess' to an idle prompt, then retry agent-msg." >&2
   exit 2

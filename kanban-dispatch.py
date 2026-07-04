@@ -99,10 +99,17 @@ def session_running(s):
 # (e.g. an agent that just created its own card). Passive capture-pane check (same
 # markers as agent-msg) — on busy we skip and let the board carry it.
 BUSY_RE = re.compile(r"esc to interrupt|Do you want to proceed|❯ +[0-9][.)]| to select| to confirm")
+# Claude Code shows a faint (SGR 2m) "ghost text" history suggestion on empty idle
+# prompts; captured plain it false-positives BUSY_RE. Capture with -e and strip the
+# faint runs (real busy indicators aren't faint) before matching.
+_FAINT = re.compile(r"\x1b\[(?:[0-9;]*;)?2m[^\x1b]*")
+_SGR = re.compile(r"\x1b\[[0-9;]*m")
 
 def session_busy(s):
-    r = sh("tmux", "capture-pane", "-t", s, "-p")
-    return r.returncode == 0 and bool(BUSY_RE.search(r.stdout))
+    r = sh("tmux", "capture-pane", "-t", s, "-e", "-p")
+    if r.returncode != 0:
+        return False
+    return bool(BUSY_RE.search(_SGR.sub("", _FAINT.sub("", r.stdout))))
 
 def ping_session(sess, kind, card):
     # Live nudge only — the board is the durable queue. A session that is offline,
