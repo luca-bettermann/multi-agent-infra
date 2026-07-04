@@ -38,15 +38,22 @@ if ! tmux has-session -t "$sess" 2>/dev/null; then
 fi
 
 # Pre-send guard — passively snapshot the target and bail if it isn't idle.
-# capture-pane only READS the screen; it injects nothing. Capture WITH escapes (-e)
-# and strip Claude Code's faint "ghost text" (a dim SGR-2m history suggestion shown
-# on an empty idle prompt) BEFORE matching — otherwise a prior message rendered as a
-# suggestion false-positives forever. Real busy indicators aren't faint, so they
-# survive. Markers (tune freely): active generation, permission dialogs, numbered
-# selection options, AskUserQuestion-style footers.
-INTERACTIVE_RE='esc to interrupt|Do you want to proceed|❯ +[0-9][.)]| to select| to confirm'
-screen="$(tmux capture-pane -t "$sess" -e -p 2>/dev/null | tail -n 40 \
-  | perl -pe 's/\e\[(?:[0-9;]*;)?2m[^\e]*//g; s/\e\[[0-9;]*m//g')"
+# capture-pane only READS the screen; it injects nothing. Three measures, each killing
+# a real false-positive class:
+#  1. Scope to the bottom UI region (last ~12 lines: input box + status line) so marker
+#     WORDS in ordinary conversation output above don't match (that refused master —
+#     this very discussion contains "esc to interrupt", "to confirm", …).
+#  2. Capture WITH escapes (-e), strip Claude Code's faint "ghost text" (a dim SGR-2m
+#     history suggestion on an empty idle prompt), and normalise NBSP (U+00A0) sitting
+#     between the prompt glyph and the ghost.
+#  3. Markers are UI-chrome ONLY (generation, permission dialog, numbered option) — not
+#     generic English like "to select"/"to confirm" which match normal prose.
+INTERACTIVE_RE='esc to interrupt|Do you want to proceed|❯ +[0-9][.)]'
+# strip escapes/ghost/NBSP, then take the last 12 lines up to the last non-blank one
+# (trailing blanks stripped so the status line can't be pushed out of the window).
+screen="$(tmux capture-pane -t "$sess" -e -p 2>/dev/null \
+  | perl -pe 's/\e\[(?:[0-9;]*;)?2m[^\e]*//g; s/\e\[[0-9;]*m//g; s/\xc2\xa0/ /g' \
+  | awk 'NF{last=NR} {b[NR]=$0} END{s=last-11; if(s<1)s=1; for(i=s;i<=last;i++)print b[i]}')"
 if printf '%s\n' "$screen" | grep -Eq "$INTERACTIVE_RE"; then
   echo "'$sess' looks busy or is at an interactive prompt — message NOT delivered. Typing into it now could collide with its prompt and submit a phantom choice. Ask the user to resolve '$sess' to an idle prompt, then retry agent-msg." >&2
   exit 2

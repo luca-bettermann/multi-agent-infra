@@ -98,10 +98,12 @@ def session_running(s):
 # then either orphans text in its input or self-interrupts work it's mid-flight on
 # (e.g. an agent that just created its own card). Passive capture-pane check (same
 # markers as agent-msg) — on busy we skip and let the board carry it.
-BUSY_RE = re.compile(r"esc to interrupt|Do you want to proceed|❯ +[0-9][.)]| to select| to confirm")
+# UI-chrome-only markers (generation, permission dialog, numbered option). NOT generic
+# English like "to select"/"to confirm" — those match ordinary conversation output.
+BUSY_RE = re.compile(r"esc to interrupt|Do you want to proceed|❯ +[0-9][.)]")
 # Claude Code shows a faint (SGR 2m) "ghost text" history suggestion on empty idle
-# prompts; captured plain it false-positives BUSY_RE. Capture with -e and strip the
-# faint runs (real busy indicators aren't faint) before matching.
+# prompts; captured plain it false-positives. Capture with -e, look only at the bottom
+# UI region (not the conversation), strip faint runs + SGR, normalise NBSP.
 _FAINT = re.compile(r"\x1b\[(?:[0-9;]*;)?2m[^\x1b]*")
 _SGR = re.compile(r"\x1b\[[0-9;]*m")
 
@@ -109,7 +111,10 @@ def session_busy(s):
     r = sh("tmux", "capture-pane", "-t", s, "-e", "-p")
     if r.returncode != 0:
         return False
-    return bool(BUSY_RE.search(_SGR.sub("", _FAINT.sub("", r.stdout))))
+    lines = [_SGR.sub("", _FAINT.sub("", l)).replace("\u00a0", " ") for l in r.stdout.splitlines()]
+    while lines and not lines[-1].strip():      # drop trailing blanks so the status
+        lines.pop()                             # line can't be pushed out of the window
+    return bool(BUSY_RE.search("\n".join(lines[-12:])))   # bottom UI region only
 
 def ping_session(sess, kind, card):
     # Live nudge only — the board is the durable queue. A session that is offline,
