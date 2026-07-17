@@ -11,12 +11,14 @@ Polls the Obsidian CLAUDE Kanban (via `git fetch` on a KB clone) and fires four 
 - card enters **`review`** -> ping the user (`notify-send`)
 - card enters **`cleanup`** + `#from/<session>` -> ping that session (handoff callback)
 
-A ping is a best-effort `tmux send-keys` nudge to the **live** session — **no file**. It is
-**skipped if the target session is busy** (generating or on an interactive prompt — passive
-`capture-pane` check): nudging then would interrupt work mid-flight (e.g. an agent that just
-created its own card → self-nudge) or orphan text in its input. The board is the durable
-queue: a session that's offline, busy, or misses a nudge recovers it by reconciling from the
-board on wake. Routing override: `#to/<session>`.
+A ping is a live nudge delivered **through `agent-msg`** — the single delivery path, so the
+dispatcher owns no busy/retry logic of its own. `agent-msg` delivers to idle **and**
+generating targets (Claude Code queues input typed mid-generation and hands it over at the
+next prompt boundary) and refuses only when `pane-state.sh` positively detects an
+**answer-consuming dialog** (permission / AskUserQuestion / plan approval / feedback prompt —
+injected keys could answer it) or when the session is absent. A refusal is logged; the board
+is the durable queue: a session that's offline or stalled recovers the event by reconciling
+from the board on wake. Routing override: `#to/<session>`.
 
 **Safe by default — `DRY_RUN=1`.**
 ```
@@ -40,6 +42,17 @@ PATH=/usr/local/bin:/usr/bin:/bin
 `VAR=val` prefix). SSH `git fetch` works non-interactively (BatchMode-verified).
 Config (env or top of file): `KB_DIR`, `SESSIONS_CONF`, `KDISPATCH_STATE`, `DRY_RUN`.
 The user `review` ping is `notify-send` only — plug ntfy/Pushover into `notify_user()` for a phone push.
+
+## 1b. `agent-msg.sh` + `pane-state.sh` — live messaging and the shared pane-state check
+`agent-msg <target> <message>` injects a message into the target session's live prompt
+(target = session name or scope tag via `sessions.conf`; symlinked as `~/.local/bin/agent-msg`).
+Semantics: idle → delivered; generating → delivered into Claude Code's input queue;
+answer-consuming dialog open → refused (exit 2, **no keys sent** — the user must resolve the
+dialog); session absent → refused (exit 1, never claims delivery). The pane classification
+(`absent | dialog | clear`) lives in **`pane-state.sh`** — the one home shared by `agent-msg`
+and the dispatcher; extend its `DIALOG_RE` when new dialog signatures appear.
+Tests: `bash tests/test_pane_state.sh` (canned-screen classification + throwaway-tmux
+integration: idle, generating, dialog, absent).
 
 ## 2. `block-context-repos.sh` — read-only context-repos/ guard
 Claude Code PreToolUse hook: blocks Edit/Write under any `context-repos/` and tells the agent

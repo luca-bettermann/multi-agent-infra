@@ -3,8 +3,9 @@
 kanban-dispatch — poll the Obsidian CLAUDE Kanban and notify the right tmux
 Claude session when a card changes column.
 
-Fires four events as LIVE tmux nudges only (the board is the durable queue — an
-offline/busy session that misses a nudge recovers it by reconciling from the board on wake):
+Fires four events as LIVE nudges delivered through agent-msg (the board is the
+durable queue — an offline session or one stalled at a dialog recovers a missed
+nudge by reconciling from the board on wake):
   * card enters `open`                       -> nudge the owning session (routed by first scope tag)
   * card moves `review` -> `in progress`     -> nudge the owning session (sign-off / build)
   * card enters `review`                     -> notify the user
@@ -91,47 +92,28 @@ def route(tags, routes):
             return routes[t]
     return None                          # no catch-all: unmapped scope is not routed
 
-def session_running(s):
-    return sh("tmux", "has-session", "-t", s).returncode == 0
-
-# A session is "busy" when generating or sitting on an interactive prompt. Nudging
-# then either orphans text in its input or self-interrupts work it's mid-flight on
-# (e.g. an agent that just created its own card). Passive capture-pane check (same
-# markers as agent-msg) — on busy we skip and let the board carry it.
-# UI-chrome-only markers (generation, permission dialog, numbered option). NOT generic
-# English like "to select"/"to confirm" — those match ordinary conversation output.
-BUSY_RE = re.compile(r"esc to interrupt|Do you want to proceed|❯ +[0-9][.)]")
-# Claude Code shows a faint (SGR 2m) "ghost text" history suggestion on empty idle
-# prompts; captured plain it false-positives. Capture with -e, look only at the bottom
-# UI region (not the conversation), strip faint runs + SGR, normalise NBSP.
-_FAINT = re.compile(r"\x1b\[(?:[0-9;]*;)?2m[^\x1b]*")
-_SGR = re.compile(r"\x1b\[[0-9;]*m")
-
-def session_busy(s):
-    r = sh("tmux", "capture-pane", "-t", s, "-e", "-p")
-    if r.returncode != 0:
-        return False
-    lines = [_SGR.sub("", _FAINT.sub("", l)).replace("\u00a0", " ") for l in r.stdout.splitlines()]
-    while lines and not lines[-1].strip():      # drop trailing blanks so the status
-        lines.pop()                             # line can't be pushed out of the window
-    return bool(BUSY_RE.search("\n".join(lines[-12:])))   # bottom UI region only
+AGENT_MSG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "agent-msg.sh")
 
 def ping_session(sess, kind, card):
-    # Live nudge only — the board is the durable queue. A session that is offline,
-    # busy, or misses this recovers the event by reconciling from the board on wake.
+    # Delivery goes through agent-msg — the single delivery path, with the single
+    # pane-state check (pane-state.sh). The dispatcher owns no busy/retry logic.
+    # agent-msg delivers to idle AND generating targets (Claude Code queues input
+    # typed mid-generation and hands it over at the next prompt boundary) and
+    # refuses only for an answer-consuming dialog (exit 2, the user must resolve
+    # it) or an absent session (exit 1). The board stays the durable queue.
+    msg = f"kanban: {kind} — '{card}'. git pull KB and reconcile your board queue."
     if DRY_RUN:
-        log(f"[DRY] -> send-keys {sess}: {kind}: {card}")
+        log(f"[DRY] -> agent-msg {sess}: {msg}")
         return
-    if not session_running(sess):
-        log(f"session '{sess}' not running — board carries it (reconcile on wake)")
-        return
-    if session_busy(sess):
-        log(f"'{sess}' busy — nudge skipped ({kind}: {card}); board carries it (reconcile when idle)")
-        return
-    sh("tmux", "send-keys", "-t", sess,
-       f"kanban: {kind} — '{card}'. git pull KB and reconcile your board queue.")
-    sh("tmux", "send-keys", "-t", sess, "Enter")   # Enter separately: send-keys drops a trailing newline
-    log(f"nudged '{sess}': {kind}: {card}")
+    r = subprocess.run([AGENT_MSG, sess, msg], capture_output=True, text=True,
+                       env={**os.environ, "AGENT_MSG_SENDER": "dispatcher"})
+    if r.returncode == 0:
+        log(f"nudged '{sess}': {kind}: {card}")
+    elif r.returncode == 2:
+        log(f"'{sess}' is stalled at an answer-consuming dialog — nudge refused "
+            f"({kind}: {card}); the user must resolve the dialog; board carries it")
+    else:
+        log(f"'{sess}' nudge NOT delivered ({kind}: {card}): {(r.stderr or r.stdout).strip()}")
 
 def notify_user(card):
     # The board's `review` column is the durable record; this is just a live ping.
