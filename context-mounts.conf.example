@@ -1,0 +1,9 @@
+# Cross-agent read-only context mounts, applied by mount-all-context.sh
+# (manually via sudo, or at boot through context-mounts.service).
+# Each line: <source-repo-path>  <agent-root>
+# The source is bind-mounted read-only at <agent-root>/context-repos/<basename>.
+#
+# Copy to context-mounts.conf and list your fleet's cross-references.
+#
+/home/USER/projects/alpha/repo-alpha    /home/USER/projects/beta
+/home/USER/projects/beta/repo-beta      /home/USER/projects/alpha

@@ -20,7 +20,7 @@ SAFE BY DEFAULT: DRY_RUN=1 logs what it WOULD do and touches nothing.
 import os, re, subprocess, sys, time
 
 # ---- config (env-overridable) ------------------------------------------------
-KB_DIR    = os.environ.get("KB_DIR", os.path.expanduser("~/projects/advei/knowledge-base"))
+KB_DIR    = os.environ.get("KB_DIR", "")   # REQUIRED: the knowledge-base clone holding the board
 BOARD     = "CLAUDE Kanban.md"
 CONF      = os.environ.get("SESSIONS_CONF", os.path.expanduser("~/projects/agent-infra/sessions.conf"))
 STATE     = os.environ.get("KDISPATCH_STATE", os.path.expanduser("~/projects/agent-infra/.state"))
@@ -72,21 +72,12 @@ def board_at(ref):
     r = sh("git", "-C", KB_DIR, "show", f"{ref}:{BOARD}")
     return r.stdout if r.returncode == 0 else ""
 
-def handoff_target(tag, kind):
-    # kind is "from" or "to". Accept the Obsidian-valid nested form
-    # (kind/<session>) and the legacy colon form (kind:<session>). A colon is
-    # NOT a valid Obsidian tag char, so #from:x renders as #from + stray ":x" —
-    # prefer the slash form on the board.
-    for sep in ("/", ":"):
-        if tag.startswith(kind + sep):
-            return tag[len(kind) + 1:]
-    return None
+def handoff_target(tag):
+    # The Obsidian-valid nested form: #from/<scope>. (A colon is not a valid
+    # Obsidian tag char, so there is no #from:x form.)
+    return tag[len("from/"):] if tag.startswith("from/") else None
 
 def route(tags, routes):
-    for t in tags:                       # #to/<session> hard override (or legacy #to:)
-        tgt = handoff_target(t, "to")
-        if tgt:
-            return tgt
     for t in tags:                       # first scope tag present in the map
         if t in routes:
             return routes[t]
@@ -136,6 +127,8 @@ def preview():
             print(f"  review  -> {'USER':8}  {title}")
 
 def main():
+    if not KB_DIR or not os.path.isdir(KB_DIR):
+        log(f"KB_DIR is unset or not a directory ('{KB_DIR}') — set it to the knowledge-base clone holding the board"); return
     if "--preview" in sys.argv:
         preview(); return
     routes = load_routes()
@@ -177,7 +170,7 @@ def main():
         elif col == "cleanup":
             frm = None
             for t in tags:
-                frm = handoff_target(t, "from")
+                frm = handoff_target(t)
                 if frm:
                     break
             if frm:

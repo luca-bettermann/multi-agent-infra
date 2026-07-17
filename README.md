@@ -1,117 +1,106 @@
-# agent-infra — Phase 1 of the multi-agent kanban workflow
+# agent-infra
 
-Three pieces. See the KB notes `Agent Setup.md` (folder template/sessions) and
-`CLAUDE.md` (routing/handoff/review rules); tracked by the task
-`Roll out multi-agent kanban workflow`.
+Coordination infrastructure for a fleet of Claude Code agents: board dispatching, live messaging, read-only context mounts, and usage-limit auto-resume. **Owner:** Luca Bettermann.
 
-## 1. `kanban-dispatch.py` — board → session dispatcher
-Polls the Obsidian CLAUDE Kanban (via `git fetch` on a KB clone) and fires four events:
-- card enters **`open`** -> ping the owning session (routed by first scope tag, `sessions.conf`)
-- card moves **`review` -> `in progress`** -> ping the owning session (design sign-off / build approval; routed like `open`)
-- card enters **`review`** -> ping the user (`notify-send`)
-- card enters **`cleanup`** + `#from/<session>` -> ping that session (handoff callback)
+## What it does and why
 
-A ping is a live nudge delivered **through `agent-msg`** — the single delivery path, so the
-dispatcher owns no busy/retry logic of its own. `agent-msg` delivers to idle **and**
-generating targets (Claude Code queues input typed mid-generation and hands it over at the
-next prompt boundary) and refuses only when `pane-state.sh` positively detects an
-**answer-consuming dialog** (permission / AskUserQuestion / plan approval / feedback prompt —
-injected keys could answer it) or when the session is absent. A refusal is logged; the board
-is the durable queue: a session that's offline or stalled recovers the event by reconciling
-from the board on wake. Routing override: `#to/<session>`.
+The working model is one context-rich expert agent per repository, each in a long-lived named tmux session, with a shared kanban board (a markdown file in a git repo) as the durable work queue. That model needs plumbing: something must turn board moves into nudges, carry live questions between agents, guarantee that reference checkouts stay read-only, and bring sessions back after the usage limit. This repo is that plumbing, four small pieces with no daemon and no database:
 
-**Safe by default — `DRY_RUN=1`.**
+```mermaid
+flowchart LR
+    board[(Kanban board<br>in the KB git repo)] -->|git fetch, diff columns| dispatcher[kanban-dispatch.py<br>cron, every minute]
+    dispatcher -->|nudge| msg[agent-msg.sh]
+    agents[Agent tmux sessions<br>one per repo] -->|questions, FYIs| msg
+    msg --> pane{pane-state.sh}
+    pane -->|clear| deliver[typed into the<br>target's prompt]
+    pane -->|dialog| refuse[refused, exit 2,<br>no keys sent]
+    pane -->|absent| fail[refused, exit 1]
+    watcher[limit-watcher.py<br>cron, every minute] -->|staggered resume<br>after the limit resets| agents
 ```
-python3 kanban-dispatch.py --preview     # show routing for current open cards (read-only)
-python3 kanban-dispatch.py               # dry run (first run just records a baseline)
-DRY_RUN=0 python3 kanban-dispatch.py     # GO LIVE
-```
-Enable via cron (every 1 min). **Status: LIVE since 2026-06-01.** Polling (not a
-push webhook) is deliberate: the remote is GitHub (no server-side hooks), Obsidian
-Git uses isomorphic-git (bypasses local hooks), and the box is behind NAT (a webhook
-would need a maintained tunnel). 1 min is cron's floor; sub-minute would mean a
-systemd timer/daemon and `git fetch` churn for no real gain — latency is dominated
-by Obsidian's commit-and-sync, not the poll. Cron's default `PATH` (`/usr/bin:/bin`)
-omits `/usr/local/bin` where `python3` lives here, so set `PATH` explicitly and use
-absolute paths:
-```
-PATH=/usr/local/bin:/usr/bin:/bin
-* * * * * flock -n /tmp/kdispatch.lock env DRY_RUN=0 python3 /home/luca/projects/agent-infra/kanban-dispatch.py >> /home/luca/projects/agent-infra/dispatch.log 2>&1
-```
-`flock` execs its argument directly, so the env var is set via `env` (not a shell
-`VAR=val` prefix). SSH `git fetch` works non-interactively (BatchMode-verified).
-Config (env or top of file): `KB_DIR`, `SESSIONS_CONF`, `KDISPATCH_STATE`, `DRY_RUN`.
-The user `review` ping is `notify-send` only — plug ntfy/Pushover into `notify_user()` for a phone push.
 
-## 1b. `agent-msg.sh` + `pane-state.sh` — live messaging and the shared pane-state check
-`agent-msg <target> <message>` injects a message into the target session's live prompt
-(target = session name or scope tag via `sessions.conf`; symlinked as `~/.local/bin/agent-msg`).
-Semantics: idle → delivered; generating → delivered into Claude Code's input queue;
-answer-consuming dialog open → refused (exit 2, **no keys sent** — the user must resolve the
-dialog); session absent → refused (exit 1, never claims delivery). The pane classification
-(`absent | dialog | clear`) lives in **`pane-state.sh`** — the one home shared by `agent-msg`
-and the dispatcher; extend its `DIALOG_RE` when new dialog signatures appear.
-Tests: `bash tests/test_pane_state.sh` (canned-screen classification + throwaway-tmux
-integration: idle, generating, dialog, absent).
+Everything is deliberately transport, not storage: the board is the only durable queue, and a message that cannot be delivered fails loudly instead of landing in an inbox. A nudge an agent misses is recovered by reconciling from the board, never replayed from a spool.
 
-## 2. `block-context-repos.sh` — read-only context-repos/ guard
-Claude Code PreToolUse hook: blocks Edit/Write under any `context-repos/` and tells the agent
-to file a handoff card. Convention-level guard (the kernel guarantee is the bind mount). Enable in
-`~/.claude/settings.json`:
+## Setup
+
+Prerequisites: Linux with tmux, git, python3, perl, and cron. `notify-send` is used for user-facing review pings if present. The mount scripts need root (sudo or a systemd unit); everything else runs as the agent user.
+
+```sh
+git clone git@github.com:luca-bettermann/multi-agent-infra.git ~/projects/agent-infra
+cd ~/projects/agent-infra
+cp sessions.conf.example sessions.conf          # then fill in your fleet
+cp context-mounts.conf.example context-mounts.conf
+
+# command symlinks (~/.local/bin is assumed on PATH)
+ln -s "$PWD/agent-msg.sh"   ~/.local/bin/agent-msg
+ln -s "$PWD/auto-resume.sh" ~/.local/bin/auto-resume
+
+# dispatcher + limit watcher, once per minute
+crontab -e
+#   PATH=/usr/local/bin:/usr/bin:/bin
+#   * * * * * flock -n /tmp/kdispatch.lock env DRY_RUN=0 KB_DIR=$HOME/path/to/knowledge-base python3 $HOME/projects/agent-infra/kanban-dispatch.py >> $HOME/projects/agent-infra/dispatch.log 2>&1
+#   * * * * * flock -n /tmp/limit-watcher.lock python3 $HOME/projects/agent-infra/limit-watcher.py >> $HOME/projects/agent-infra/limit-watcher.log 2>&1
+
+# read-only context mounts at boot (edit the two /home/USER paths first)
+sudo cp context-mounts.service /etc/systemd/system/ && sudo systemctl enable --now context-mounts
+```
+
+The write guard is a Claude Code hook; register it in `~/.claude/settings.json` (spell the path out absolutely, hook commands are not tilde-expanded):
+
 ```json
 "hooks": { "PreToolUse": [ { "matcher": "Edit|Write|MultiEdit",
-  "hooks": [ { "type": "command", "command": "/home/luca/projects/agent-infra/block-context-repos.sh" } ] } ] }
+  "hooks": [ { "type": "command", "command": "/home/<user>/projects/agent-infra/block-context-repos.sh" } ] } ] }
 ```
 
-## 3. `mount-context-repo.sh` — read-only bind mount
-```
-./mount-context-repo.sh <owner-repo-path> <agent-root>
-```
-Mounts a repo read-only into `<agent-root>/context-repos/` (sudo; prints the `/etc/fstab` line to persist).
+The dispatcher is safe by default: without `DRY_RUN=0` it only logs what it would do, and its first live run just records a baseline. `python3 kanban-dispatch.py --preview` shows the routing for the current board without touching anything.
 
-## 4. `context-mounts.conf` + `mount-all-context.sh` — persistent, manifest-driven mounts
-`context-mounts.conf` is the **source of truth** for all cross-agent context bind mounts
-(one `<source-repo> <agent-root>` per line). `mount-all-context.sh` mounts them all
-read-only, idempotently (skips already-mounted, warns on a missing source) and re-execs
-itself via `sudo` when run as non-root; `--dry-run` previews without mounting.
+## Configuration
 
-Persistence is the **systemd oneshot** `context-mounts.service` (runs the script at boot,
-as root) — **not** `/etc/fstab`. To persist or change the mount topology, edit the
-manifest, not fstab. `mount-context-repo.sh` (§3) is fine for a quick ad-hoc one-off, but
-anything that should survive a reboot belongs in the manifest.
+Two files, both plain text, both deployment-specific and gitignored; copy each from its `.example` template and fill in your fleet:
 
-Install the boot unit (one-time):
-```
-sudo cp ~/projects/agent-infra/context-mounts.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now context-mounts.service
-```
-Add context for an agent: add a line to `context-mounts.conf`, then run `./mount-all-context.sh`.
+**`sessions.conf`** maps board scope tags to tmux sessions, one `tag session` pair per line. The first scope tag on a card decides the owning session; a tag not in this file is logged and not routed, there is no catch-all. This file is the authoritative routing map; consult it, never a copy of it.
 
-## 5. `limit-watcher.py` + `auto-resume.sh` — auto-resume after the 5h usage limit
-The 5-hour usage limit is **per-account, shared across every session**. `limit-watcher.py`
-(cron, every 1 min) passively `capture-pane`-snapshots each **enrolled** tmux session;
-when one shows the usage-limit screen it parses the reset time and, once past (+90s),
-injects a resume prompt so the agent continues — Claude Code keeps the conversation alive
-through the limit, so no `--continue` is needed. Because the bucket is shared it resumes
-**at most one session per tick** (in `sessions.conf` order), with `MAX_ATTEMPTS` and a
-`+5h` fallback if the reset time can't be parsed. There is no limit-hit hook in Claude
-Code, so screen-scraping is the only signal. Run `limit-watcher.py --selftest` to exercise
-the reset-time parser offline.
+**`context-mounts.conf`** lists the cross-agent read-only mounts, one `source-repo-path agent-root` pair per line. `mount-all-context.sh` applies the manifest idempotently (manually via sudo, or at boot through `context-mounts.service`). `mount-wiki.sh` does the same for the team wiki, mounting the canonical clone read-only into every agent's knowledge base checkout.
 
-Control surface (`auto-resume.sh`, symlinked to `~/.local/bin/auto-resume`):
+Dispatcher environment: `KB_DIR` is required (the knowledge-base clone whose `origin/main` holds the board); `SESSIONS_CONF`, `KDISPATCH_STATE`, and `DRY_RUN` are optional overrides. `mount-wiki.sh` takes `WIKI_CANON` to point at a different canonical wiki clone.
+
+## Commands
+
+```sh
+agent-msg <target> <message...>    # live message into another agent's prompt
+                                   # target: session name or scope tag (sessions.conf)
+auto-resume on|off                 # master switch for the limit watcher
+auto-resume enable|disable <sess>  # enroll or unenroll a session
+auto-resume status                 # master state, enrolled set, cron, recent log
+python3 kanban-dispatch.py --preview   # read-only routing preview
+./mount-all-context.sh [--dry-run]     # apply the context-mount manifest
+./mount-wiki.sh                        # mount the wiki into all agent KBs
+bash tests/test_pane_state.sh          # test suite
 ```
-auto-resume status               # master state · enrolled set · cron · recent log
-auto-resume on | off             # master kill-switch (limit-watcher.off); off = paused
-auto-resume enable  <session>    # enroll a session (auto-resume.enrolled)
-auto-resume disable <session>    # unenroll
-```
-**Opt-in**: ships master-OFF with an empty enrolled set (resumes nobody until you
-`enable <session>` **and** `on`). Files: `limit-watcher.off` (master switch),
-`auto-resume.enrolled` (one session per line), `limit-watcher.state.json` (per-session
-reset_ts + attempts), `limit-watcher.log` (audit trail). Cron line:
-```
-* * * * * flock -n /tmp/limit-watcher.lock /usr/local/bin/python3 /home/luca/projects/agent-infra/limit-watcher.py >> /home/luca/projects/agent-infra/limit-watcher.log 2>&1
-```
-**Caveat:** not yet validated against a real limit event — the open unknown is whether an
-injected keystroke re-engages a freshly-reset session. Confirm on the next genuine hit.
+
+## Core concepts
+
+### The board is the durable queue
+
+The dispatcher polls `origin/main` of the knowledge-base repo, diffs the board between the last seen commit and the new one, and fires on four column events: a card entering `open` nudges the owning session, `review` notifies the user, `review` back to `in progress` hands a card back to its agent, and `cleanup` on a card carrying `#from/<scope>` calls back the scope that handed it off. Every nudge is a live accelerator and nothing more. Sessions reconcile their queue from the board on wake, so a missed nudge costs latency, never work.
+
+### Message delivery semantics
+
+`agent-msg` types the message into the target's live tmux prompt and submits it. An idle target gets it immediately. A generating target gets it too: Claude Code queues input typed mid-generation and hands it over at the next prompt boundary, so senders never wait for idle. Delivery is refused in exactly two cases, both explicit: the session does not exist (exit 1), or the pane shows an answer-consuming dialog such as a permission prompt, AskUserQuestion, plan approval, or the feedback dialog (exit 2, and no keys are sent, because injected text plus Enter could answer the dialog as a phantom choice). There is deliberately no durable inbox, spool, or retry daemon behind any of this; on refusal the sender is told what to do instead.
+
+The pane classification (`absent | dialog | clear`) lives in one place, `pane-state.sh`, shared by `agent-msg` and the dispatcher so the two cannot drift. Detection is positive-only dialog chrome; mere busyness never blocks delivery. `DIALOG_RE` in that script is the tunable part, extended as new dialog signatures appear. `pane-state.sh --classify` reads a captured screen from stdin, which is what makes the semantics testable offline.
+
+### Read-only context, enforced twice
+
+Agents reference each other's repos through `context-repos/` checkouts that must never be written. The kernel guarantee is a read-only bind mount from the manifest; the convention guard is the PreToolUse hook, which blocks Claude Code edits under any `context-repos/` path with a pointer to the handoff workflow. Both layers are cheap; together a write is impossible rather than discouraged.
+
+### Auto-resume after the usage limit
+
+The account-wide usage limit halts every session at once. `limit-watcher.py` passively captures each enrolled pane, recognises the limit screen, parses the reset time, and once it has passed injects a resume prompt, at most one session per tick so the fleet does not re-saturate the shared bucket in one burst. Detection and injection reuse the same passive-capture and send-keys patterns as the rest of the repo. Enrollment is explicit (`auto-resume enable <session>`), and the master switch is a kill file checked every tick.
+
+## Tests and CI
+
+`bash tests/test_pane_state.sh` covers the delivery contract end to end: canned-screen classification (idle with ghost text, generating, permission dialog, feedback prompt, numbered selectors, dialog words scrolled out of the input region) plus tmux integration with throwaway sessions for idle delivery, generating delivery, dialog refusal with zero injected keys, and absent-session failure. GitHub Actions runs the same suite and a secret scan on every push.
+
+## Deeper
+
+Each script carries its full contract in its header comment; there is no separate context doc to drift. Deployment-specific bindings (which machine, which sessions, which repos are mounted where) live with the deployment, in the gitignored `sessions.conf` and `context-mounts.conf` and in the operator's own knowledge base, not in this repo.

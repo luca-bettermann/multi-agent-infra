@@ -8,7 +8,11 @@
 #   ./mount-wiki.sh [--dry-run] [--fstab]
 set -uo pipefail
 
-CANON="/home/luca/projects/master/knowledge-base/robolab"
+# Paths derive from this script's own location (survives the sudo re-exec, where
+# $HOME flips to root's): agent roots live under the projects dir that contains
+# this repo. Override CANON via WIKI_CANON for a different canonical clone.
+PROJECTS="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
+CANON="${WIKI_CANON:-$PROJECTS/master/knowledge-base/robolab}"
 
 DRY=0; SHOW_FSTAB=0
 for a in "$@"; do case "$a" in --dry-run) DRY=1;; --fstab) SHOW_FSTAB=1;; esac; done
@@ -17,8 +21,8 @@ for a in "$@"; do case "$a" in --dry-run) DRY=1;; --fstab) SHOW_FSTAB=1;; esac; 
 [ -d "$CANON/.git" ] || { echo "canonical wiki clone missing: $CANON" >&2; exit 1; }
 
 ok=0; skip=0
-for kb in /home/luca/projects/*/knowledge-base; do
-  [ "$kb" = "/home/luca/projects/master/knowledge-base" ] && continue   # master owns the canonical
+for kb in "$PROJECTS"/*/knowledge-base; do
+  [ "$kb" = "$(dirname "$CANON")" ] && continue   # master owns the canonical
   [ -d "$kb" ] || continue
   dst="$kb/robolab"
   if [ "$SHOW_FSTAB" = 1 ]; then echo "$CANON  $dst  none  bind,ro,nofail  0 0"; continue; fi
