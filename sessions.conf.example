@@ -1,7 +1,8 @@
 # kanban-dispatch routing map: scope-tag -> tmux session.
 # The first scope tag on a board card decides the owning session.
-# ONE session per repo (the agent root that owns it). NO fallback:
-# an unmapped scope is logged and NOT routed.
+# Each tag maps to exactly ONE session; several tags may share a session
+# (an agent owning several repos). NO fallback: an unmapped scope is
+# logged and NOT routed.
 #
 # Copy to sessions.conf and fill in your fleet.
 #
