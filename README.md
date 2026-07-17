@@ -13,6 +13,7 @@ flowchart LR
     agents[Agent tmux sessions<br>one per repo] -->|questions, FYIs| msg
     msg --> pane{pane-state.sh}
     pane -->|clear| deliver[typed into the<br>target's prompt]
+    pane -->|feedback| dismiss[auto-dismissed with '0',<br>re-checked, delivered]
     pane -->|dialog| refuse[refused, exit 2,<br>no keys sent]
     pane -->|absent| fail[refused, exit 1]
     watcher[limit-watcher.py<br>cron, every minute] -->|staggered resume<br>after the limit resets| agents
@@ -81,13 +82,15 @@ The pane classification (`absent | feedback | dialog | clear`) lives in one plac
 
 Agents hold no copies of each other's repositories. Cross-repo information is a question to the repository's own agent, whose warm context answers cheaper and better than a cold read of foreign source; an actual code dependency is a pinned git reference in the consumer's environment, never a checkout of the owner's working tree. The ownership boundary is enforced by absence: what an agent does not have, it cannot fork context from or write to.
 
+Two refinements keep the rule honest at its edges. A repository with no owning agent has nobody to ask, so its remote is the source: read it there or through a throwaway clone, and distil any load-bearing facts into your own documentation with the remote URL cited. And a deployment-composition dependency (one stack including another repo's deploy files, such as a compose `include:`) resolves against a dedicated sibling checkout in the consumer's deploy directory, the same way production does, never against the owning agent's live root: a live working tree moves under you, whatever branch the owner happens to have checked out.
+
 ### Auto-resume after the usage limit
 
 The account-wide usage limit halts every session at once. `limit-watcher.py` passively captures each enrolled pane, recognises the limit screen, parses the reset time, and once it has passed injects a resume prompt, at most one session per tick so the fleet does not re-saturate the shared bucket in one burst. Detection and injection reuse the same passive-capture and send-keys patterns as the rest of the repo. Enrollment is explicit (`auto-resume enable <session>`), and the master switch is a kill file checked every tick.
 
 ## Tests and CI
 
-`bash tests/test_pane_state.sh` covers the delivery contract end to end: canned-screen classification (idle with ghost text, generating, permission dialog, feedback prompt, numbered selectors, dialog words scrolled out of the input region) plus tmux integration with throwaway sessions for idle delivery, generating delivery, dialog refusal with zero injected keys, and absent-session failure. GitHub Actions runs the same suite and a secret scan on every push.
+`bash tests/test_pane_state.sh` covers the delivery contract end to end: canned-screen classification (idle with ghost text, generating, permission dialog, feedback prompt, numbered selectors, dialog words scrolled out of the input region) plus tmux integration with throwaway sessions for idle delivery, generating delivery, feedback auto-dismiss followed by delivery, dialog refusal with zero injected keys, and absent-session failure. GitHub Actions runs the same suite and a secret scan on every push.
 
 ## Deeper
 
