@@ -4,5 +4,5 @@ __pycache__/
 .state
 auto-resume.enrolled
 sessions.conf
-context-mounts.conf
 limit-watcher.off
+context-mounts.conf

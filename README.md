@@ -1,10 +1,10 @@
 # agent-infra
 
-Coordination infrastructure for a fleet of Claude Code agents: board dispatching, live messaging, read-only context mounts, and usage-limit auto-resume. **Owner:** Luca Bettermann.
+Coordination infrastructure for a fleet of Claude Code agents: board dispatching, live messaging, and usage-limit auto-resume. **Owner:** Luca Bettermann.
 
 ## What it does and why
 
-The working model is one context-rich expert agent per repository, each in a long-lived named tmux session, with a shared kanban board (a markdown file in a git repo) as the durable work queue. That model needs plumbing: something must turn board moves into nudges, carry live questions between agents, guarantee that reference checkouts stay read-only, and bring sessions back after the usage limit. This repo is that plumbing, four small pieces with no daemon and no database:
+The working model is one context-rich expert agent per repository, each in a long-lived named tmux session, with a shared kanban board (a markdown file in a git repo) as the durable work queue. That model needs plumbing: something must turn board moves into nudges, carry live questions between agents, and bring sessions back after the usage limit. This repo is that plumbing, three small pieces with no daemon and no database:
 
 ```mermaid
 flowchart LR
@@ -22,13 +22,12 @@ Everything is deliberately transport, not storage: the board is the only durable
 
 ## Setup
 
-Prerequisites: Linux with tmux, git, python3, perl, and cron. `notify-send` is used for user-facing review pings if present. The mount scripts need root (sudo or a systemd unit); everything else runs as the agent user.
+Prerequisites: Linux with tmux, git, python3, perl, and cron. `notify-send` is used for user-facing review pings if present. Everything runs as the agent user; only the optional wiki mount needs sudo.
 
 ```sh
 git clone git@github.com:luca-bettermann/multi-agent-infra.git ~/projects/agent-infra
 cd ~/projects/agent-infra
 cp sessions.conf.example sessions.conf          # then fill in your fleet
-cp context-mounts.conf.example context-mounts.conf
 
 # command symlinks (~/.local/bin is assumed on PATH)
 ln -s "$PWD/agent-msg.sh"   ~/.local/bin/agent-msg
@@ -39,27 +38,17 @@ crontab -e
 #   PATH=/usr/local/bin:/usr/bin:/bin
 #   * * * * * flock -n /tmp/kdispatch.lock env DRY_RUN=0 KB_DIR=$HOME/path/to/knowledge-base python3 $HOME/projects/agent-infra/kanban-dispatch.py >> $HOME/projects/agent-infra/dispatch.log 2>&1
 #   * * * * * flock -n /tmp/limit-watcher.lock python3 $HOME/projects/agent-infra/limit-watcher.py >> $HOME/projects/agent-infra/limit-watcher.log 2>&1
-
-# read-only context mounts at boot (edit the two /home/USER paths first)
-sudo cp context-mounts.service /etc/systemd/system/ && sudo systemctl enable --now context-mounts
-```
-
-The write guard is a Claude Code hook; register it in `~/.claude/settings.json` (spell the path out absolutely, hook commands are not tilde-expanded):
-
-```json
-"hooks": { "PreToolUse": [ { "matcher": "Edit|Write|MultiEdit",
-  "hooks": [ { "type": "command", "command": "/home/<user>/projects/agent-infra/block-context-repos.sh" } ] } ] }
 ```
 
 The dispatcher is safe by default: without `DRY_RUN=0` it only logs what it would do, and its first live run just records a baseline. `python3 kanban-dispatch.py --preview` shows the routing for the current board without touching anything.
 
 ## Configuration
 
-Two files, both plain text, both deployment-specific and gitignored; copy each from its `.example` template and fill in your fleet:
+One file, plain text, deployment-specific and gitignored; copy it from its `.example` template and fill in your fleet:
 
 **`sessions.conf`** maps board scope tags to tmux sessions, one `tag session` pair per line. The first scope tag on a card decides the owning session; a tag not in this file is logged and not routed, there is no catch-all. This file is the authoritative routing map; consult it, never a copy of it.
 
-**`context-mounts.conf`** lists the cross-agent read-only mounts, one `source-repo-path agent-root` pair per line. `mount-all-context.sh` applies the manifest idempotently (manually via sudo, or at boot through `context-mounts.service`). `mount-wiki.sh` does the same for the team wiki, mounting the canonical clone read-only into every agent's knowledge base checkout.
+`mount-wiki.sh` optionally bind-mounts one canonical clone of a shared team wiki read-only into every agent's knowledge base checkout, so shared documentation has a single synchronized copy.
 
 Dispatcher environment: `KB_DIR` is required (the knowledge-base clone whose `origin/main` holds the board); `SESSIONS_CONF`, `KDISPATCH_STATE`, and `DRY_RUN` are optional overrides. `mount-wiki.sh` takes `WIKI_CANON` to point at a different canonical wiki clone.
 
@@ -72,7 +61,6 @@ auto-resume on|off                 # master switch for the limit watcher
 auto-resume enable|disable <sess>  # enroll or unenroll a session
 auto-resume status                 # master state, enrolled set, cron, recent log
 python3 kanban-dispatch.py --preview   # read-only routing preview
-./mount-all-context.sh [--dry-run]     # apply the context-mount manifest
 ./mount-wiki.sh                        # mount the wiki into all agent KBs
 bash tests/test_pane_state.sh          # test suite
 ```
@@ -89,9 +77,9 @@ The dispatcher polls `origin/main` of the knowledge-base repo, diffs the board b
 
 The pane classification (`absent | feedback | dialog | clear`) lives in one place, `pane-state.sh`, shared by `agent-msg` and the dispatcher so the two cannot drift. Detection is positive-only dialog chrome; mere busyness never blocks delivery. `DIALOG_RE` in that script is the tunable part, extended as new dialog signatures appear. `pane-state.sh --classify` reads a captured screen from stdin, which is what makes the semantics testable offline.
 
-### Read-only context, enforced twice
+### Cross-repo knowledge flows through agents, not checkouts
 
-Agents reference each other's repos through `context-repos/` checkouts that must never be written. The kernel guarantee is a read-only bind mount from the manifest; the convention guard is the PreToolUse hook, which blocks Claude Code edits under any `context-repos/` path with a pointer to the handoff workflow. Both layers are cheap; together a write is impossible rather than discouraged.
+Agents hold no copies of each other's repositories. Cross-repo information is a question to the repository's own agent, whose warm context answers cheaper and better than a cold read of foreign source; an actual code dependency is a pinned git reference in the consumer's environment, never a checkout of the owner's working tree. The ownership boundary is enforced by absence: what an agent does not have, it cannot fork context from or write to.
 
 ### Auto-resume after the usage limit
 
@@ -103,4 +91,4 @@ The account-wide usage limit halts every session at once. `limit-watcher.py` pas
 
 ## Deeper
 
-Each script carries its full contract in its header comment; there is no separate context doc to drift. Deployment-specific bindings (which machine, which sessions, which repos are mounted where) live with the deployment, in the gitignored `sessions.conf` and `context-mounts.conf` and in the operator's own knowledge base, not in this repo.
+Each script carries its full contract in its header comment; there is no separate context doc to drift. Deployment-specific bindings (which machine and which sessions) live with the deployment, in the gitignored `sessions.conf` and in the operator's own knowledge base, not in this repo.
