@@ -3,18 +3,21 @@
 # pane-state check shared by agent-msg.sh and kanban-dispatch.py, so the two
 # cannot drift.
 #
-#   pane-state.sh <session>      -> prints: absent | dialog | clear
+#   pane-state.sh <session>      -> prints: absent | feedback | dialog | clear
 #   pane-state.sh --classify     -> reads a captured screen from stdin,
-#                                   prints: dialog | clear   (testable offline)
+#                                   prints: feedback | dialog | clear
 #
 # States:
-#   absent  the tmux session does not exist
-#   dialog  an ANSWER-CONSUMING UI is open (permission dialog, AskUserQuestion,
-#           plan approval, folder-trust, feedback prompt): injected text/Enter
-#           could answer it and submit a phantom choice -> callers must refuse
-#   clear   anything else: idle prompt OR actively generating / running tools.
-#           Sending is safe — Claude Code queues input typed while it is
-#           generating and delivers it at the next prompt boundary.
+#   absent    the tmux session does not exist
+#   feedback  the periodic "How is Claude doing this session?" prompt is open.
+#             It consumes one keypress and holds no content decision; callers
+#             may auto-dismiss it (send '0') and re-check.
+#   dialog    an ANSWER-CONSUMING content dialog is open (permission dialog,
+#             AskUserQuestion, plan approval, folder-trust): injected text/Enter
+#             could answer it and submit a phantom choice -> callers must refuse
+#   clear     anything else: idle prompt OR actively generating / running tools.
+#             Sending is safe — Claude Code queues input typed while it is
+#             generating and delivers it at the next prompt boundary.
 #
 # Detection is POSITIVE-ONLY: block for detected dialog chrome, never for mere
 # busyness. Markers are UI chrome, not generic English ("to select",
@@ -29,8 +32,10 @@ set -euo pipefail
 #   'Do you want'                       permission-dialog question line
 #   'Would you like to proceed'         plan-approval question line
 #   'Do you trust the files'            folder-trust dialog
-#   'How is Claude doing this session'  periodic feedback prompt
-DIALOG_RE='❯ +[0-9][.)]|Do you want|Would you like to proceed|Do you trust the files|How is Claude doing this session'
+DIALOG_RE='❯ +[0-9][.)]|Do you want|Would you like to proceed|Do you trust the files'
+# The feedback prompt also renders numbered options, so it must be recognised
+# BEFORE the generic dialog chrome.
+FEEDBACK_RE='How is Claude doing this session'
 
 classify() {
   # stdin: raw screen capture (with escapes). Three measures, each killing a
@@ -44,7 +49,9 @@ classify() {
   local screen
   screen="$(perl -pe 's/\e\[(?:[0-9;]*;)?2m[^\e]*//g; s/\e\[[0-9;]*m//g; s/\xc2\xa0/ /g' \
     | awk 'NF{last=NR} {b[NR]=$0} END{s=last-11; if(s<1)s=1; for(i=s;i<=last;i++)print b[i]}')"
-  if printf '%s\n' "$screen" | grep -Eq "$DIALOG_RE"; then
+  if printf '%s\n' "$screen" | grep -Eq "$FEEDBACK_RE"; then
+    echo feedback
+  elif printf '%s\n' "$screen" | grep -Eq "$DIALOG_RE"; then
     echo dialog
   else
     echo clear

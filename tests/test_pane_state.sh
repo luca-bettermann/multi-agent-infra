@@ -8,11 +8,12 @@ DIR="$(cd "$(dirname "$0")/.." && pwd)"
 PS="$DIR/pane-state.sh"
 AM="$DIR/agent-msg.sh"
 TMP="$(mktemp -d)"
-S1="pstest-clear-$$"; S2="pstest-dialog-$$"; S3="pstest-gen-$$"
+S1="pstest-clear-$$"; S2="pstest-dialog-$$"; S3="pstest-gen-$$"; S4="pstest-fb-$$"
 cleanup() {
   tmux kill-session -t "$S1" 2>/dev/null
   tmux kill-session -t "$S2" 2>/dev/null
   tmux kill-session -t "$S3" 2>/dev/null
+  tmux kill-session -t "$S4" 2>/dev/null
   rm -rf "$TMP"
 }
 trap cleanup EXIT
@@ -37,9 +38,9 @@ check "generating -> clear" "clear" "$(printf '%s\n' "$gen_screen" | "$PS" --cla
 perm_screen="$(printf 'Do you want to proceed?\n ❯ 1. Yes\n   2. No\n')"
 check "permission dialog -> dialog" "dialog" "$(printf '%s\n' "$perm_screen" | "$PS" --classify)"
 
-# periodic feedback prompt
+# periodic feedback prompt: its own state, auto-dismissable by callers
 fb_screen="$(printf 'How is Claude doing this session?\n ❯ 1. Good\n   2. Bad\n   0. Dismiss\n')"
-check "feedback prompt -> dialog" "dialog" "$(printf '%s\n' "$fb_screen" | "$PS" --classify)"
+check "feedback prompt -> feedback" "feedback" "$(printf '%s\n' "$fb_screen" | "$PS" --classify)"
 
 # AskUserQuestion-style selector (numbered options only, no question keyword)
 ask_screen="$(printf 'Pick an approach:\n ❯ 1) Option A\n   2) Option B\n')"
@@ -92,6 +93,19 @@ check "agent-msg to dialog pane exits 2" "2" "$?"
 sleep 0.5
 [ ! -s "$TMP/dialog.out" ]
 check "no keys injected into dialog pane" "0" "$?"
+
+# feedback pane: one keypress dismisses it (read -n1), screen clears, then the
+# message must be delivered. The '0' is consumed by the dismiss, not the message.
+tmux new-session -d -s "$S4" "bash -c 'printf \"How is Claude doing this session?\\n ❯ 1. Good\\n   0. Dismiss\\n\"; read -n1 k; printf \"\\033[2J\\033[H\"; exec cat > \"$TMP/fb.out\"'"
+sleep 0.5
+check "feedback pane -> feedback" "feedback" "$("$PS" "$S4")"
+AGENT_MSG_SENDER=test "$AM" "$S4" "hello after dismiss"
+check "agent-msg auto-dismisses feedback and exits 0" "0" "$?"
+sleep 0.5
+grep -q "hello after dismiss" "$TMP/fb.out"
+check "message landed after feedback dismiss" "0" "$?"
+grep -q "0" "$TMP/fb.out" && fbleak=1 || fbleak=0
+check "dismiss keypress not leaked into delivered text" "0" "$fbleak"
 
 # absent target through agent-msg: explicit failure (exit 1)
 AGENT_MSG_SENDER=test "$AM" "no-such-session-$$" "into the void" 2>/dev/null

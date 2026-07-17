@@ -13,8 +13,10 @@
 #   idle target        -> lands on the prompt and submits immediately
 #   generating target  -> lands in Claude Code's own input queue and is delivered
 #                         at the next prompt boundary (send anyway, don't wait)
-#   answer-consuming dialog open (permission dialog, AskUserQuestion, plan approval,
-#   feedback prompt)   -> REFUSED, exit 2, no keys sent: injected text/Enter could
+#   feedback prompt open ("How is Claude doing this session?") -> auto-dismissed
+#                         with '0', re-checked, then delivered normally
+#   answer-consuming content dialog open (permission dialog, AskUserQuestion,
+#   plan approval)     -> REFUSED, exit 2, no keys sent: injected text/Enter could
 #                         answer the dialog and submit a phantom choice. The user must
 #                         resolve the dialog in the target session; then retry.
 #   session not running-> REFUSED, exit 1 (live-only; never claims delivery)
@@ -34,14 +36,27 @@ sender="${AGENT_MSG_SENDER:-$(tmux display-message -p '#S' 2>/dev/null || echo "
 
 # Pre-send guard — the shared pane-state check (pane-state.sh, one home for
 # agent-msg + dispatcher). Blocks ONLY on positively detected answer-consuming
-# UI or an absent session; idle and generating targets both get the message.
+# CONTENT dialogs or an absent session; idle and generating targets both get
+# the message, and the harmless periodic feedback prompt is auto-dismissed.
 state="$("$DIR/pane-state.sh" "$sess")"
+if [ "$state" = feedback ]; then
+  # The feedback prompt holds no content decision; '0' dismisses it without
+  # rating. Send the single keypress, give the UI a beat, then re-check —
+  # deliver only if the pane actually cleared.
+  tmux send-keys -t "$sess" -l '0'
+  sleep 1
+  state="$("$DIR/pane-state.sh" "$sess")"
+  if [ "$state" = feedback ]; then
+    echo "'$sess' shows the feedback prompt and did not clear after auto-dismiss ('0') — message NOT delivered. Check the session; its UI may have changed shape." >&2
+    exit 2
+  fi
+fi
 case "$state" in
   absent)
     echo "'$sess' is not running — message NOT delivered. agent-msg is live-only; retry when the session is up (tracked work belongs on the board, not in a message)." >&2
     exit 1;;
   dialog)
-    echo "'$sess' is stalled at an answer-consuming dialog (permission / AskUserQuestion / plan approval / feedback prompt) — message NOT delivered, no keys sent: typing into it could answer the dialog and submit a phantom choice. The user must resolve the dialog in '$sess'; then retry agent-msg." >&2
+    echo "'$sess' is stalled at an answer-consuming dialog (permission / AskUserQuestion / plan approval) — message NOT delivered, no keys sent: typing into it could answer the dialog and submit a phantom choice. The user must resolve the dialog in '$sess'; then retry agent-msg." >&2
     exit 2;;
 esac
 
