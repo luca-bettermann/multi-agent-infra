@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Tests for pane-state.sh classification and agent-msg delivery semantics.
+# Tests for pane-state.sh classification, agent-msg delivery, and agent-clear
+# semantics.
 # Classification cases feed canned screens to `pane-state.sh --classify`;
 # integration cases use throwaway tmux sessions on the default server
 # (unique pstest-$$ names, killed on exit). Run: bash tests/test_pane_state.sh
@@ -7,13 +8,12 @@ set -u
 DIR="$(cd "$(dirname "$0")/.." && pwd)"
 PS="$DIR/pane-state.sh"
 AM="$DIR/agent-msg.sh"
+AC="$DIR/agent-clear.sh"
 TMP="$(mktemp -d)"
 S1="pstest-clear-$$"; S2="pstest-dialog-$$"; S3="pstest-gen-$$"; S4="pstest-fb-$$"
+S5="pstest-acok-$$"; S6="pstest-acbusy-$$"
 cleanup() {
-  tmux kill-session -t "$S1" 2>/dev/null
-  tmux kill-session -t "$S2" 2>/dev/null
-  tmux kill-session -t "$S3" 2>/dev/null
-  tmux kill-session -t "$S4" 2>/dev/null
+  for s in "$S1" "$S2" "$S3" "$S4" "$S5" "$S6"; do tmux kill-session -t "$s" 2>/dev/null; done
   rm -rf "$TMP"
 }
 trap cleanup EXIT
@@ -30,9 +30,22 @@ check() { # <name> <want> <got>
 idle_screen="$(printf '╭──────╮\n│ >\xc2\xa0\x1b[2mtry "fix the tests"\x1b[0m │\n╰──────╯\n  status line\n')"
 check "idle prompt -> clear" "clear" "$(printf '%s\n' "$idle_screen" | "$PS" --classify)"
 
-# actively generating: must NOT block any more (input queues at the prompt boundary)
+# actively generating: its own state, but NOT a blocking one for agent-msg
+# (input queues at the prompt boundary); agent-clear does refuse on it.
 gen_screen="$(printf '✳ Reticulating splines… (esc to interrupt)\n╭──────╮\n│ >  │\n╰──────╯\n')"
-check "generating -> clear" "clear" "$(printf '%s\n' "$gen_screen" | "$PS" --classify)"
+check "generating spinner -> busy" "busy" "$(printf '%s\n' "$gen_screen" | "$PS" --classify)"
+
+# the interrupt hint on the status bar rather than a spinner line
+statusbar_screen="$(printf '╭──────╮\n│ >  │\n╰──────╯\n  ⏵⏵ bypass permissions on · esc to interrupt\n')"
+check "status-bar interrupt hint -> busy" "busy" "$(printf '%s\n' "$statusbar_screen" | "$PS" --classify)"
+
+# a dialog on a busy pane is still a dialog: the stronger refusal wins
+busy_dialog_screen="$(printf 'Do you want to proceed?\n ❯ 1. Yes\n   2. No\n  esc to interrupt\n')"
+check "dialog beats busy -> dialog" "dialog" "$(printf '%s\n' "$busy_dialog_screen" | "$PS" --classify)"
+
+# busy words scrolled above the bottom UI region must not match either
+busy_scroll_screen="$(printf 'earlier output: the hint reads esc to interrupt\n%s╭──────╮\n│ >  │\n╰──────╯\n' "$(printf 'filler line\n%.0s' 1 2 3 4 5 6 7 8 9 10 11 12)")"
+check "busy words above UI region -> clear" "clear" "$(printf '%s\n' "$busy_scroll_screen" | "$PS" --classify)"
 
 # permission dialog: question line + highlighted numbered option
 perm_screen="$(printf 'Do you want to proceed?\n ❯ 1. Yes\n   2. No\n')"
@@ -77,7 +90,7 @@ check "message landed in clear pane" "0" "$?"
 # generating-look pane (esc to interrupt on screen): must also deliver
 tmux new-session -d -s "$S3" "printf '✳ Thinking… (esc to interrupt)\n'; cat > '$TMP/gen.out'"
 sleep 0.5
-check "generating-look pane -> clear" "clear" "$("$PS" "$S3")"
+check "generating-look pane -> busy" "busy" "$("$PS" "$S3")"
 AGENT_MSG_SENDER=test "$AM" "$S3" "hello generating pane"
 check "agent-msg to generating pane exits 0" "0" "$?"
 sleep 0.5
@@ -110,6 +123,85 @@ check "dismiss keypress not leaked into delivered text" "0" "$fbleak"
 # absent target through agent-msg: explicit failure (exit 1)
 AGENT_MSG_SENDER=test "$AM" "no-such-session-$$" "into the void" 2>/dev/null
 check "agent-msg to absent session exits 1" "1" "$?"
+
+# ---- agent-clear verification (offline, captured screens) --------------------
+
+# Real post-clear screen, captured from a live session (tmux capture-pane -p -S -60):
+# the reprinted startup banner followed by the echoed '❯ /clear'.
+post_clear_screen="$(printf '  - KB wave-note 885caa5e → pushed\n ▐▛███▜▌   Claude Code v2.1.220\n▝▜█████▛▘  Opus 4.8 with xhigh effort · Claude Max\n  ▘▘ ▝▝    ~/projects/demo\n\n   Tackle your toughest work with Opus 5. Switch anytime with /model.\n\n❯ /clear\n\n')"
+printf '%s\n' "$post_clear_screen" | "$AC" --verify
+check "post-clear banner + echo -> verified" "0" "$?"
+
+# Same screen with SGR colour escapes around the banner: normalisation must cope.
+printf '%s\n' "$(printf '\x1b[1m ▐▛███▜▌\x1b[0m   \x1b[38;5;208mClaude Code v2.1.220\x1b[0m\n\n\x1b[2mghost\x1b[0m❯ /clear\n')" | "$AC" --verify
+check "post-clear with SGR escapes -> verified" "0" "$?"
+
+# agent-msg's prefixed text is NOT the echoed command (this is exactly why
+# agent-msg cannot clear a session) — and it sits above the banner besides.
+prefixed_screen="$(printf '❯ [agent-msg from rtde] /clear\n\n ▐▛███▜▌   Claude Code v2.1.220\n\n❯ [agent-msg from rtde] /clear\n')"
+printf '%s\n' "$prefixed_screen" | "$AC" --verify
+check "prefixed '/clear' chat text -> not verified" "1" "$?"
+
+# an echoed '/clear' with no fresh banner under it: the command was typed but
+# the session never restarted its context
+printf '%s\n' "$(printf 'some earlier output\n❯ /clear\n')" | "$AC" --verify
+check "echo without banner -> not verified" "1" "$?"
+
+# banner above the echo only (stale ordering): not this clear
+printf '%s\n' "$(printf '❯ /clear\n ▐▛███▜▌   Claude Code v2.1.220\n\n')" | "$AC" --verify
+check "echo before banner -> not verified" "1" "$?"
+
+# ---- agent-clear delivery (throwaway tmux sessions) --------------------------
+
+# absent target
+"$AC" "no-such-session-$$" 2>/dev/null
+check "agent-clear on absent session exits 1" "1" "$?"
+
+# dialog pane: refusal, no keys injected (S2 is still parked on its dialog)
+: > "$TMP/dialog.out"
+"$AC" "$S2" 2>/dev/null
+check "agent-clear on dialog pane exits 2" "2" "$?"
+sleep 0.5
+[ ! -s "$TMP/dialog.out" ]
+check "agent-clear injected no keys into dialog pane" "0" "$?"
+
+# busy pane: refusal (exit 3), no keys injected — a queued '/clear' would arrive
+# as chat text, so agent-clear waits for idle instead
+tmux new-session -d -s "$S6" "printf '✳ Thinking… (esc to interrupt)\n'; cat > '$TMP/busy.out'"
+sleep 0.5
+check "busy pane -> busy" "busy" "$("$PS" "$S6")"
+"$AC" "$S6" 2>/dev/null
+check "agent-clear on busy pane exits 3" "3" "$?"
+sleep 0.5
+[ ! -s "$TMP/busy.out" ]
+check "agent-clear injected no keys into busy pane" "0" "$?"
+
+# idle pane that never shows a banner: keys are sent, but the clear is NOT
+# claimed — unconfirmed is a loud failure, never a silent success
+CLEAR_TIMEOUT=2 "$AC" "$S1" 2>/dev/null
+check "agent-clear without banner exits 4" "4" "$?"
+sleep 0.5
+grep -qx '/clear' "$TMP/clear.out"
+check "agent-clear typed a bare '/clear' (no prefix)" "0" "$?"
+
+# idle pane that answers with a fresh banner + echo: confirmed clear
+cat > "$TMP/fake-claude.sh" <<'FAKE'
+#!/usr/bin/env bash
+out="$1"
+IFS= read -r line
+printf '%s\n' "$line" > "$out"
+printf ' ▐▛███▜▌   Claude Code v9.9.9\n▝▜█████▛▘  Test model · Claude Max\n\n'
+printf '❯ %s\n\n' "$line"
+exec cat >> "$out"
+FAKE
+tmux new-session -d -s "$S5" "bash '$TMP/fake-claude.sh' '$TMP/ok.out'"
+sleep 0.5
+out="$(CLEAR_TIMEOUT=10 "$AC" "$S5")"
+check "agent-clear on confirming pane exits 0" "0" "$?"
+check "agent-clear reports the session" "cleared '$S5'" "$out"
+grep -qx '/clear' "$TMP/ok.out"
+check "confirming pane received exactly '/clear'" "0" "$?"
+
 
 echo "passed $pass, failed $fail"
 exit $((fail > 0))

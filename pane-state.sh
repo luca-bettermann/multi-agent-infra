@@ -3,9 +3,9 @@
 # pane-state check shared by agent-msg.sh and kanban-dispatch.py, so the two
 # cannot drift.
 #
-#   pane-state.sh <session>      -> prints: absent | feedback | dialog | clear
+#   pane-state.sh <session>      -> prints: absent | feedback | dialog | busy | clear
 #   pane-state.sh --classify     -> reads a captured screen from stdin,
-#                                   prints: feedback | dialog | clear
+#                                   prints: feedback | dialog | busy | clear
 #
 # States:
 #   absent    the tmux session does not exist
@@ -15,14 +15,21 @@
 #   dialog    an ANSWER-CONSUMING content dialog is open (permission dialog,
 #             AskUserQuestion, plan approval, folder-trust): injected text/Enter
 #             could answer it and submit a phantom choice -> callers must refuse
-#   clear     anything else: idle prompt OR actively generating / running tools.
-#             Sending is safe — Claude Code queues input typed while it is
-#             generating and delivers it at the next prompt boundary.
+#   busy      Claude Code is actively generating / running tools (the
+#             "esc to interrupt" status hint is on screen). NOT a blocking state
+#             for message delivery: Claude Code queues input typed while it is
+#             generating and hands it over at the next prompt boundary, so
+#             agent-msg sends anyway. It IS blocking for callers that need the
+#             pane to consume a keystroke NOW as a command rather than as
+#             queued chat text — agent-clear refuses on it.
+#   clear     anything else: an idle prompt, ready to consume input immediately.
 #
-# Detection is POSITIVE-ONLY: block for detected dialog chrome, never for mere
-# busyness. Markers are UI chrome, not generic English ("to select",
-# "to confirm" match ordinary prose). DIALOG_RE is the tunable part — extend it
-# as new dialog signatures appear.
+# Detection is POSITIVE-ONLY: block for detected dialog chrome, never for
+# guessed-at busyness — 'busy' too is a positively detected status hint, and it
+# leaves agent-msg's accept/refuse decision unchanged (it refuses on absent and
+# dialog only). Markers are UI chrome, not generic English ("to select",
+# "to confirm" match ordinary prose). DIALOG_RE and BUSY_RE are the tunable
+# parts — extend them as new signatures appear.
 set -euo pipefail
 
 # Answer-consuming dialog chrome:
@@ -36,6 +43,11 @@ DIALOG_RE='❯ +[0-9][.)]|Do you want|Would you like to proceed|Do you trust the
 # The feedback prompt also renders numbered options, so it must be recognised
 # BEFORE the generic dialog chrome.
 FEEDBACK_RE='How is Claude doing this session'
+# Generating chrome: the interrupt hint Claude Code shows — and only shows —
+# while it is producing output or running a tool. It rides the spinner line
+# ("✳ Reticulating splines… (esc to interrupt)") and the status bar alike, so
+# one marker covers both renderings.
+BUSY_RE='esc to interrupt'
 
 classify() {
   # stdin: raw screen capture (with escapes). Three measures, each killing a
@@ -53,6 +65,8 @@ classify() {
     echo feedback
   elif printf '%s\n' "$screen" | grep -Eq "$DIALOG_RE"; then
     echo dialog
+  elif printf '%s\n' "$screen" | grep -Eq "$BUSY_RE"; then
+    echo busy
   else
     echo clear
   fi

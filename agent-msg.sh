@@ -38,6 +38,8 @@ sender="${AGENT_MSG_SENDER:-$(tmux display-message -p '#S' 2>/dev/null || echo "
 # agent-msg + dispatcher). Blocks ONLY on positively detected answer-consuming
 # CONTENT dialogs or an absent session; idle and generating targets both get
 # the message, and the harmless periodic feedback prompt is auto-dismissed.
+# The classifier's 'busy' (generating) is deliberately absent from the refusal
+# case below — busyness alone never blocks a message, only agent-clear.
 state="$("$DIR/pane-state.sh" "$sess")"
 if [ "$state" = feedback ]; then
   # The feedback prompt holds no content decision; '0' dismisses it without
