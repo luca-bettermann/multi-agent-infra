@@ -13,7 +13,9 @@ flowchart LR
     agents[Expert agent sessions<br>one per project] -->|questions, FYIs| msg[agent-msg.sh]
     dispatcher[kanban-dispatch.py<br>add-on: board nudges] -->|nudges| msg
     msg --> pane{pane-state.sh}
+    clearer[agent-clear.sh<br>remote /clear] --> pane
     pane -->|clear| deliver[typed into the<br>target's prompt]
+    pane -->|busy| queued[message queued at the next<br>prompt boundary;<br>agent-clear refused, exit 3]
     pane -->|feedback| dismiss[auto-dismissed with '0',<br>re-checked, delivered]
     pane -->|dialog| refuse[refused, exit 2,<br>no keys sent]
     pane -->|absent| fail[refused, exit 1]
@@ -33,6 +35,7 @@ cp sessions.conf.example sessions.conf          # then fill in your fleet
 
 # core: the messaging command (~/.local/bin is assumed on PATH)
 ln -s "$PWD/agent-msg.sh" ~/.local/bin/agent-msg
+ln -s "$PWD/agent-clear.sh" ~/.local/bin/agent-clear
 
 # add-on: board dispatcher (once per minute)
 #   * * * * * flock -n /tmp/kdispatch.lock env DRY_RUN=0 KB_DIR=$HOME/path/to/knowledge-base python3 $HOME/projects/agent-infra/kanban-dispatch.py >> $HOME/projects/agent-infra/dispatch.log 2>&1
@@ -57,6 +60,7 @@ Dispatcher environment: `KB_DIR` is required (the git clone whose `origin/main` 
 ```sh
 agent-msg <target> <message...>    # live message into another agent's prompt
                                    # target: session name or scope tag (sessions.conf)
+agent-clear <target>               # clear that agent's conversation context (/clear)
 auto-resume on|off                 # master switch for the limit watcher
 auto-resume enable|disable <sess>  # enroll or unenroll a session
 auto-resume status                 # master state, enrolled set, cron, recent log
@@ -76,7 +80,11 @@ The same logic covers the edges. A repository with no owning agent has nobody to
 
 `agent-msg` types the message into the target's live tmux prompt and submits it. An idle target receives it immediately. A generating target receives it as well: Claude Code queues input typed mid-generation and hands it over at the next prompt boundary, so senders send without waiting. The periodic feedback prompt is handled on the sender's behalf: it holds no content decision, so agent-msg dismisses it with a single `0` keypress, re-checks the pane, and delivers. Delivery is refused in exactly two cases, both explicit: the session does not exist (exit 1), or the pane shows an answer-consuming content dialog such as a permission prompt, AskUserQuestion, or plan approval (exit 2, with no keys sent, because injected text plus Enter could answer the dialog as a phantom choice). There is deliberately no durable inbox, spool, or retry daemon behind any of this; on refusal the sender is told what to do instead.
 
-The pane classification (`absent | feedback | dialog | clear`) lives in one place, `pane-state.sh`, shared by `agent-msg` and the dispatcher so the two cannot drift. Detection is positive-only dialog chrome; busyness alone is not a blocking state. `DIALOG_RE` in that script is the tunable part, extended as new dialog signatures appear. `pane-state.sh --classify` reads a captured screen from stdin, which is what makes the semantics testable offline.
+The pane classification (`absent | feedback | dialog | busy | clear`) lives in one place, `pane-state.sh`, shared by `agent-msg`, `agent-clear`, and the dispatcher so they cannot drift. Detection is positive-only chrome — dialog markers, and for `busy` the `esc to interrupt` hint Claude Code shows only while it is generating. Busyness is still not a blocking state for messages: `agent-msg` refuses on `absent` and `dialog` alone and delivers to a busy pane exactly as before. `DIALOG_RE` and `BUSY_RE` in that script are the tunable parts, extended as new signatures appear. `pane-state.sh --classify` reads a captured screen from stdin, which is what makes the semantics testable offline.
+
+### Clearing a session's context
+
+`agent-clear <target>` frees a long-lived agent from a context window it has outgrown, by typing Claude Code's own `/clear` into the target's prompt. It cannot go through `agent-msg`: that prefixes every message with `[agent-msg from <sender>]`, so the target reads the slash command as chat and answers it. So `agent-clear` sends the raw keystrokes itself, one session at a time, and nothing else. It refuses on the same absent (exit 1) and dialog (exit 2) states as messaging, and additionally on `busy` (exit 3), because a generating pane queues typed input for the next prompt boundary, where `/clear` would land as chat text rather than as a command. After sending it polls the pane for the proof of a real clear — a freshly reprinted `Claude Code v…` banner with the submitted `❯ /clear` echoed beneath it — and prints `cleared '<session>'` only on seeing one; an unconfirmed clear fails loudly (exit 4) instead of being assumed. `agent-clear --verify` runs that check against a captured screen on stdin, so it is testable offline like the classifier.
 
 ## Add-ons
 
@@ -92,7 +100,7 @@ The account-wide usage limit halts every session at once. `limit-watcher.py` pas
 
 ## Tests and CI
 
-`bash tests/test_pane_state.sh` covers the delivery contract end to end: canned-screen classification (idle with ghost text, generating, permission dialog, feedback prompt, numbered selectors, dialog words scrolled out of the input region) plus tmux integration with throwaway sessions for idle delivery, generating delivery, feedback auto-dismiss followed by delivery, dialog refusal with zero injected keys, and absent-session failure. GitHub Actions runs the same suite and a secret scan on every push.
+`bash tests/test_pane_state.sh` covers the delivery contract end to end: canned-screen classification (idle with ghost text, generating spinner and status-bar hint, permission dialog, feedback prompt, numbered selectors, marker words scrolled out of the input region) plus tmux integration with throwaway sessions for idle delivery, generating delivery, feedback auto-dismiss followed by delivery, dialog refusal with zero injected keys, and absent-session failure. `agent-clear` is covered the same way: post-clear verification against a screen captured from a live session, its refusals on absent, dialog, and busy panes with zero injected keys, an unconfirmed clear failing loudly, and a confirmed one reporting success. GitHub Actions runs the same suite and a secret scan on every push.
 
 ## Deeper
 
