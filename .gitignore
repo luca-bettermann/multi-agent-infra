@@ -2,7 +2,5 @@ __pycache__/
 *.log
 *.state.json
 .state
-auto-resume.enrolled
 sessions.conf
-limit-watcher.off
 context-mounts.conf

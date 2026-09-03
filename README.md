@@ -1,12 +1,12 @@
 # agent-infra
 
-Infrastructure for a fleet of expert Claude Code agents: a live inter-agent messaging core, with a board dispatcher and usage-limit auto-resume as add-ons built on it. **Owner:** Luca Bettermann.
+Infrastructure for a fleet of expert Claude Code agents: a live inter-agent messaging core, with a board dispatcher as an add-on built on it. **Owner:** Luca Bettermann.
 
 ## What it does and why
 
 The working model is a fleet of long-lived expert agents, one per project, each in a named tmux session holding its scope's context permanently. An agent may own one repository or several; every repository has exactly one owning agent. Because each expert keeps its context warm, cross-project knowledge flows as questions between agents rather than as source checkouts: the owner answers from context that already holds the why, the gotchas, and the current state, which is cheaper and more reliable than a cold read of foreign code.
 
-The core of this repo is the messaging layer that makes those questions work: `agent-msg` delivers straight into another agent's live prompt, and `pane-state.sh` classifies the target pane so delivery is safe. Everything else is an add-on riding on that core: a dispatcher that turns kanban-board moves into nudges (the board is one choice of work queue; the messaging does not depend on it), and a watcher that resumes sessions after the account usage limit.
+The core of this repo is the messaging layer that makes those questions work: `agent-msg` delivers straight into another agent's live prompt, and `pane-state.sh` classifies the target pane so delivery is safe. Everything else is an add-on riding on that core: a dispatcher that turns kanban-board moves into nudges (the board is one choice of work queue; the messaging does not depend on it).
 
 ```mermaid
 flowchart LR
@@ -19,7 +19,6 @@ flowchart LR
     pane -->|feedback| dismiss[auto-dismissed with '0',<br>re-checked, delivered]
     pane -->|dialog| refuse[refused, exit 2,<br>no keys sent]
     pane -->|absent| fail[refused, exit 1]
-    watcher[limit-watcher.py<br>add-on: auto-resume] -->|staggered resume<br>after the limit resets| agents
 ```
 
 Everything is deliberately transport, not storage: a message that cannot be delivered fails loudly instead of landing in an inbox, and the durable state lives wherever the deployment keeps its work queue.
@@ -39,10 +38,6 @@ ln -s "$PWD/agent-clear.sh" ~/.local/bin/agent-clear
 
 # add-on: board dispatcher (once per minute)
 #   * * * * * flock -n /tmp/kdispatch.lock env DRY_RUN=0 KB_DIR=$HOME/path/to/knowledge-base python3 $HOME/projects/agent-infra/kanban-dispatch.py >> $HOME/projects/agent-infra/dispatch.log 2>&1
-
-# add-on: usage-limit auto-resume (once per minute)
-ln -s "$PWD/auto-resume.sh" ~/.local/bin/auto-resume
-#   * * * * * flock -n /tmp/limit-watcher.lock python3 $HOME/projects/agent-infra/limit-watcher.py >> $HOME/projects/agent-infra/limit-watcher.log 2>&1
 ```
 
 Cron needs `PATH=/usr/local/bin:/usr/bin:/bin` set at the top of the crontab. The dispatcher is safe by default: without `DRY_RUN=0` it only logs what it would do, and its first live run just records a baseline. `python3 kanban-dispatch.py --preview` shows the routing for the current board without touching anything.
@@ -61,9 +56,6 @@ Dispatcher environment: `KB_DIR` is required (the git clone whose `origin/main` 
 agent-msg <target> <message...>    # live message into another agent's prompt
                                    # target: session name or scope tag (sessions.conf)
 agent-clear <target>               # clear that agent's conversation context (/clear)
-auto-resume on|off                 # master switch for the limit watcher
-auto-resume enable|disable <sess>  # enroll or unenroll a session
-auto-resume status                 # master state, enrolled set, cron, recent log
 python3 kanban-dispatch.py --preview   # read-only routing preview
 bash tests/test_pane_state.sh          # test suite
 ```
@@ -94,9 +86,9 @@ One deployment's choice of durable work queue is a kanban board: a markdown file
 
 This add-on is **strictly optional, and off by default**. Because sessions already reconcile from the board on wake and resume, and `agent-msg` already carries any notification that must land now, a deployment can run on reconcile-plus-direct-messaging alone — and some deliberately do, since automatic board-move nudges are more often noise than signal. Enable the dispatcher only if you want the latency shaved off routine transitions; skip it and lose nothing durable.
 
-### Auto-resume after the usage limit
+### Resuming after the usage limit
 
-The account-wide usage limit halts every session at once. `limit-watcher.py` passively captures each enrolled pane, recognises the limit screen, parses the reset time, and once it has passed injects a resume prompt, at most one session per tick so the fleet does not re-saturate the shared bucket in one burst. Detection and injection reuse the same passive-capture and send-keys patterns as the messaging core. Enrollment is explicit (`auto-resume enable <session>`), and the master switch is a kill file checked every tick.
+The account-wide usage limit is now handled by Claude Code itself (`autoContinueAtUsageLimit`); this repo no longer ships a watcher for it.
 
 ## Tests and CI
 
